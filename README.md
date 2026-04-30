@@ -72,6 +72,36 @@ python3 -S sr_great_scratchpad.py audit monday-meawness
 python3 -S sr_great_scratchpad.py audit monday-meawness --json
 ```
 
+### REPL-first workflow
+
+別タブで会話して、一区切りついたら raw log と annotation を一緒に保存するための薄いREPLがあります。
+
+```bash
+python3 -S sr_great_scratchpad.py repl
+```
+
+例:
+
+```text
+sr> new monday-meawness Monday Meawness
+sr:monday-meawness> add user
+Raw articulation (finish with a single '.' line)
+| ここに別タブの会話ログや一区切りの発話を貼る
+| Semantic Compressionは結論を残すが、Trajectoryを破壊する。
+| .
+Center pin> semantic compression と trajectory loss
+Trajectory> 要約の便利さからTopic Driftの実害へ話が移動した
+Anchors> Semantic Compression, Trajectory, Topic Drift
+Local assumptions> REPLは最初のinterfaceとして十分
+Open questions> agentic retrievalをどこまで自律させるか
+Drift risks> フォーム化しすぎると早すぎる圧縮になる
+sr:monday-meawness> search トピック中心がぶれる
+sr:monday-meawness> pack Semantic Compression Topic Drift 軌道 --include-guide --out context_pack.md
+sr:monday-meawness> audit
+```
+
+最初はCLI/REPLで挙動を見ます。どのタイミングで検索したくなるか、どのannotationが効くか、どこでTopic Driftを感じるかを観測してから、TUIやフロントエンドの形を決めます。
+
 ### Live run
 
 挙動を見ながら育てるための小さな実行例を用意しています。
@@ -157,6 +187,36 @@ Audit:
 python3 -S sr_great_scratchpad.py audit monday-meawness
 python3 -S sr_great_scratchpad.py audit monday-meawness --json
 ```
+
+### REPL-first Workflow
+
+There is a thin REPL for the intended early workflow: talk in another tab, then paste a meaningful segment of the interaction back into the scratchpad with lightweight trajectory annotation.
+
+```bash
+python3 -S sr_great_scratchpad.py repl
+```
+
+Example:
+
+```text
+sr> new monday-meawness Monday Meawness
+sr:monday-meawness> add user
+Raw articulation (finish with a single '.' line)
+| Paste a conversation segment from another tab.
+| Semantic Compression preserves conclusions but destroys Trajectory.
+| .
+Center pin> semantic compression and trajectory loss
+Trajectory> The thread moved from summarization usefulness to Topic Drift risk.
+Anchors> Semantic Compression, Trajectory, Topic Drift
+Local assumptions> REPL is enough for the first interface.
+Open questions> How autonomous should agentic retrieval be?
+Drift risks> Over-formalizing the UI may become premature compression.
+sr:monday-meawness> search Topic Drift
+sr:monday-meawness> pack Semantic Compression Topic Drift trajectory --include-guide --out context_pack.md
+sr:monday-meawness> audit
+```
+
+The plan is to learn the interaction before freezing the product surface: observe when retrieval is wanted, which annotations actually help, and where Topic Drift becomes visible.
 
 ### Live Run
 

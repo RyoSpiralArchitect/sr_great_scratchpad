@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import sys
 from collections import Counter
 from pathlib import Path
@@ -468,6 +469,58 @@ def retrieve(tdir: Path, query: str, top: int) -> list[tuple[float, Path, str]]:
     return hits[:top]
 
 
+def add_turn(
+    root: Path,
+    thread_id: str,
+    speaker: str,
+    raw: str,
+    center: str = "",
+    trajectory: str = "",
+    anchors: str = "",
+    assumptions: str = "",
+    open_questions: str = "",
+    drift_risks: str = "",
+) -> tuple[int, Path]:
+    ensure_root(root)
+    tdir = ensure_thread(root, thread_id)
+
+    meta = load_meta(tdir)
+    turn_no = int(meta.get("last_turn", 0)) + 1
+
+    keys = auto_keys(
+        raw,
+        center,
+        trajectory,
+        anchors,
+        assumptions,
+        open_questions,
+        drift_risks,
+    )
+
+    md = build_turn_md(
+        turn_no=turn_no,
+        speaker=speaker,
+        raw=raw,
+        center=center,
+        trajectory=trajectory,
+        anchors=anchors,
+        assumptions=assumptions,
+        open_questions=open_questions,
+        drift_risks=drift_risks,
+        retrieval_keys=keys,
+    )
+
+    filename = f"{turn_no:06d}-{speaker}.md"
+    path = tdir / "turns" / filename
+    path.write_text(md, encoding="utf-8")
+
+    meta["last_turn"] = turn_no
+    meta["updated_at"] = now_iso()
+    save_meta(tdir, meta)
+
+    return turn_no, path
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     root = root_path(args)
     ensure_root(root)
@@ -515,26 +568,10 @@ def cmd_list(args: argparse.Namespace) -> None:
 
 def cmd_add(args: argparse.Namespace) -> None:
     root = root_path(args)
-    ensure_root(root)
-    tdir = ensure_thread(root, args.thread)
-
-    meta = load_meta(tdir)
-    turn_no = int(meta.get("last_turn", 0)) + 1
-
     raw = read_text_arg(args.text, args.text_file)
-
-    keys = auto_keys(
-        raw,
-        args.center or "",
-        args.trajectory or "",
-        args.anchors or "",
-        args.assumptions or "",
-        args.open_questions or "",
-        args.drift_risks or "",
-    )
-
-    md = build_turn_md(
-        turn_no=turn_no,
+    turn_no, path = add_turn(
+        root=root,
+        thread_id=args.thread,
         speaker=args.speaker,
         raw=raw,
         center=args.center or "",
@@ -543,16 +580,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         assumptions=args.assumptions or "",
         open_questions=args.open_questions or "",
         drift_risks=args.drift_risks or "",
-        retrieval_keys=keys,
     )
-
-    filename = f"{turn_no:06d}-{args.speaker}.md"
-    path = tdir / "turns" / filename
-    path.write_text(md, encoding="utf-8")
-
-    meta["last_turn"] = turn_no
-    meta["updated_at"] = now_iso()
-    save_meta(tdir, meta)
 
     print(f"Added turn {turn_no:06d}: {path}")
 
@@ -812,6 +840,327 @@ def cmd_pack(args: argparse.Namespace) -> None:
         print(output)
 
 
+REPL_HELP = """Great Scratchpad REPL commands:
+
+  help                         Show this help.
+  root                         Show active scratchpad root.
+  list | threads               List threads.
+  new THREAD [TITLE...]        Create or open a thread.
+  use THREAD                   Set the active thread.
+  thread                       Show the active thread.
+  add [SPEAKER] [THREAD]       Add one turn. Raw articulation is multiline.
+  note [THREAD]                Add a note turn.
+  search QUERY [--top N]       Search the active thread.
+  recent [N]                   Show recent turns from the active thread.
+  pack QUERY [options]         Build a context pack from the active thread.
+  audit [--json]               Audit the active thread.
+  guide                        Print the annotation guide.
+  compact [options]            Create trajectory blocks for the active thread.
+  quit | exit                  Leave the REPL.
+
+Multiline raw input ends with a single '.' line.
+"""
+
+
+def _input_line(prompt: str) -> str:
+    try:
+        return input(prompt)
+    except EOFError:
+        raise KeyboardInterrupt
+
+
+def _input_block(label: str) -> str:
+    print(f"{label} (finish with a single '.' line)")
+    lines: list[str] = []
+    while True:
+        line = _input_line("| ")
+        if line == ".":
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _input_field(label: str) -> str:
+    return _input_line(f"{label}> ").strip()
+
+
+def _active_thread_or_warn(active_thread: str | None) -> str | None:
+    if active_thread:
+        return active_thread
+    print("No active thread. Use: new THREAD or use THREAD")
+    return None
+
+
+def _parse_repl_args(parser: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace | None:
+    try:
+        return parser.parse_args(argv)
+    except SystemExit:
+        return None
+
+
+def _repl_search_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="search", add_help=False)
+    p.add_argument("query", nargs="+")
+    p.add_argument("--top", type=int, default=8)
+    p.add_argument("--width", type=int, default=420)
+    return p
+
+
+def _repl_recent_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="recent", add_help=False)
+    p.add_argument("n", nargs="?", type=int, default=6)
+    p.add_argument("--max-chars", type=int, default=1600)
+    return p
+
+
+def _repl_pack_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="pack", add_help=False)
+    p.add_argument("query", nargs="+")
+    p.add_argument("--recent", type=int, default=6)
+    p.add_argument("--top", type=int, default=6)
+    p.add_argument("--max-chars-per-doc", type=int, default=2200)
+    p.add_argument("--include-guide", action="store_true")
+    p.add_argument("--out", default=None)
+    return p
+
+
+def _repl_audit_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="audit", add_help=False)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--max-flags", type=int, default=8)
+    return p
+
+
+def _repl_compact_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="compact", add_help=False)
+    p.add_argument("--start", type=int, default=None)
+    p.add_argument("--end", type=int, default=None)
+    p.add_argument("--block-size", type=int, default=30)
+    p.add_argument("--raw-excerpt-chars", type=int, default=900)
+    return p
+
+
+def _repl_handle_add(root: Path, active_thread: str | None, tokens: list[str]) -> str | None:
+    if tokens[0] == "note":
+        speaker = "note"
+        thread_id = tokens[1] if len(tokens) > 1 else active_thread
+    else:
+        speaker = tokens[1] if len(tokens) > 1 else "note"
+        thread_id = tokens[2] if len(tokens) > 2 else active_thread
+
+    if speaker not in {"user", "assistant", "system", "tool", "note"}:
+        print("Speaker must be one of: user, assistant, system, tool, note")
+        return active_thread
+
+    thread_id = _active_thread_or_warn(thread_id)
+    if not thread_id:
+        return active_thread
+
+    raw = _input_block("Raw articulation")
+    if not raw:
+        print("No raw articulation; skipped.")
+        return active_thread
+
+    center = _input_field("Center pin")
+    trajectory = _input_field("Trajectory")
+    anchors = _input_field("Anchors")
+    assumptions = _input_field("Local assumptions")
+    open_questions = _input_field("Open questions")
+    drift_risks = _input_field("Drift risks")
+
+    turn_no, path = add_turn(
+        root=root,
+        thread_id=thread_id,
+        speaker=speaker,
+        raw=raw,
+        center=center,
+        trajectory=trajectory,
+        anchors=anchors,
+        assumptions=assumptions,
+        open_questions=open_questions,
+        drift_risks=drift_risks,
+    )
+    print(f"Added turn {turn_no:06d}: {path}")
+    return thread_id
+
+
+def _repl_run_command(root: Path, active_thread: str | None, line: str) -> tuple[str | None, bool]:
+    try:
+        tokens = shlex.split(line)
+    except ValueError as exc:
+        print(f"Could not parse command: {exc}")
+        return active_thread, True
+
+    if not tokens:
+        return active_thread, True
+
+    cmd = tokens[0].lower()
+
+    if cmd in {"quit", "exit"}:
+        return active_thread, False
+
+    if cmd in {"help", "?"}:
+        print(REPL_HELP)
+        return active_thread, True
+
+    if cmd == "root":
+        print(root)
+        return active_thread, True
+
+    if cmd in {"list", "threads"}:
+        cmd_list(argparse.Namespace(root=str(root)))
+        return active_thread, True
+
+    if cmd == "new":
+        if len(tokens) < 2:
+            print("Usage: new THREAD [TITLE...]")
+            return active_thread, True
+        thread_id = tokens[1]
+        title = " ".join(tokens[2:])
+        cmd_new(argparse.Namespace(root=str(root), thread=thread_id, title=title))
+        return thread_id, True
+
+    if cmd == "use":
+        if len(tokens) != 2:
+            print("Usage: use THREAD")
+            return active_thread, True
+        thread_id = tokens[1]
+        ensure_thread(root, thread_id)
+        print(f"Active thread: {safe_id(thread_id)}")
+        return safe_id(thread_id), True
+
+    if cmd == "thread":
+        print(active_thread or "(none)")
+        return active_thread, True
+
+    if cmd in {"add", "note"}:
+        return _repl_handle_add(root, active_thread, tokens), True
+
+    if cmd == "search":
+        thread_id = _active_thread_or_warn(active_thread)
+        if not thread_id:
+            return active_thread, True
+        ns = _parse_repl_args(_repl_search_parser(), tokens[1:])
+        if not ns:
+            print("Usage: search QUERY [--top N] [--width N]")
+            return active_thread, True
+        cmd_search(
+            argparse.Namespace(
+                root=str(root),
+                thread=thread_id,
+                query=" ".join(ns.query),
+                top=ns.top,
+                width=ns.width,
+            )
+        )
+        return active_thread, True
+
+    if cmd == "recent":
+        thread_id = _active_thread_or_warn(active_thread)
+        if not thread_id:
+            return active_thread, True
+        ns = _parse_repl_args(_repl_recent_parser(), tokens[1:])
+        if not ns:
+            print("Usage: recent [N] [--max-chars N]")
+            return active_thread, True
+        cmd_recent(argparse.Namespace(root=str(root), thread=thread_id, n=ns.n, max_chars=ns.max_chars))
+        return active_thread, True
+
+    if cmd == "pack":
+        thread_id = _active_thread_or_warn(active_thread)
+        if not thread_id:
+            return active_thread, True
+        ns = _parse_repl_args(_repl_pack_parser(), tokens[1:])
+        if not ns:
+            print("Usage: pack QUERY [--recent N] [--top N] [--include-guide] [--out PATH]")
+            return active_thread, True
+        cmd_pack(
+            argparse.Namespace(
+                root=str(root),
+                thread=thread_id,
+                query=" ".join(ns.query),
+                recent=ns.recent,
+                top=ns.top,
+                max_chars_per_doc=ns.max_chars_per_doc,
+                include_guide=ns.include_guide,
+                out=ns.out,
+            )
+        )
+        return active_thread, True
+
+    if cmd == "audit":
+        thread_id = _active_thread_or_warn(active_thread)
+        if not thread_id:
+            return active_thread, True
+        ns = _parse_repl_args(_repl_audit_parser(), tokens[1:])
+        if not ns:
+            print("Usage: audit [--json] [--max-flags N]")
+            return active_thread, True
+        cmd_audit(argparse.Namespace(root=str(root), thread=thread_id, json=ns.json, max_flags=ns.max_flags))
+        return active_thread, True
+
+    if cmd == "guide":
+        cmd_guide(argparse.Namespace(root=str(root)))
+        return active_thread, True
+
+    if cmd == "compact":
+        thread_id = _active_thread_or_warn(active_thread)
+        if not thread_id:
+            return active_thread, True
+        ns = _parse_repl_args(_repl_compact_parser(), tokens[1:])
+        if not ns:
+            print("Usage: compact [--start N] [--end N] [--block-size N]")
+            return active_thread, True
+        cmd_compact(
+            argparse.Namespace(
+                root=str(root),
+                thread=thread_id,
+                start=ns.start,
+                end=ns.end,
+                block_size=ns.block_size,
+                raw_excerpt_chars=ns.raw_excerpt_chars,
+            )
+        )
+        return active_thread, True
+
+    print(f"Unknown command: {tokens[0]}. Type 'help' for commands.")
+    return active_thread, True
+
+
+def cmd_repl(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    ensure_root(root)
+
+    active_thread = safe_id(args.thread) if args.thread else None
+    if active_thread:
+        try:
+            ensure_thread(root, active_thread)
+        except SystemExit as exc:
+            print(exc)
+            active_thread = None
+
+    print("Great Scratchpad REPL. Type 'help' for commands, 'quit' to exit.")
+    print(f"Root: {root}")
+    if active_thread:
+        print(f"Active thread: {active_thread}")
+
+    while True:
+        prompt = f"sr:{active_thread}> " if active_thread else "sr> "
+        try:
+            line = _input_line(prompt)
+            active_thread, keep_running = _repl_run_command(root, active_thread, line)
+        except KeyboardInterrupt:
+            print()
+            break
+        except SystemExit as exc:
+            if exc.code:
+                print(exc)
+            keep_running = True
+
+        if not keep_running:
+            break
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Great Scratchpad: trajectory-preserving markdown memory.",
@@ -829,6 +1178,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("guide", help="Print the Great Scratchpad annotation guide.")
     sp.set_defaults(func=cmd_guide)
+
+    sp = sub.add_parser("repl", help="Start an interactive Great Scratchpad REPL.")
+    sp.add_argument("thread", nargs="?", default=None)
+    sp.set_defaults(func=cmd_repl)
 
     sp = sub.add_parser("new", help="Create or open a thread.")
     sp.add_argument("thread")

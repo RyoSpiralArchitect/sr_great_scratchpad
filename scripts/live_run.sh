@@ -39,4 +39,24 @@ echo "## Audit JSON"
 python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" audit monday-meawness --json
 
 echo
+echo "## REPL smoke"
+{
+  printf '%s\n' "new repl-smoke REPL Smoke"
+  printf '%s\n' "add user"
+  printf '%s\n' "Semantic Compression preserves conclusions."
+  printf '%s\n' "Trajectory loss makes Topic Drift easier to miss."
+  printf '%s\n' "."
+  printf '%s\n' "semantic compression and trajectory loss"
+  printf '%s\n' "A pasted conversation segment becomes a trajectory-aware turn"
+  printf '%s\n' "Semantic Compression, Trajectory, Topic Drift"
+  printf '%s\n' "REPL is enough for the first interface"
+  printf '%s\n' "Which prompts are too heavy?"
+  printf '%s\n' "Premature UI structure may become compression"
+  printf '%s\n' "search Topic Drift --top 3"
+  printf '%s\n' "pack Semantic Compression trajectory --include-guide --out ${tmp_root}/repl_context_pack.md"
+  printf '%s\n' "audit"
+  printf '%s\n' "quit"
+} | python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" repl
+
+echo
 echo "Live run complete. Inspect artifacts under: ${tmp_root}"
