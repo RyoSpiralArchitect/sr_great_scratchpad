@@ -59,4 +59,27 @@ echo "## REPL smoke"
 } | python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" repl
 
 echo
+echo "## LLM config + fake local annotation smoke"
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" llm-config local \
+  --profile fake-local \
+  --command "python3 -S ${repo_root}/scripts/fake_llm.py" \
+  --default
+
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" annotate \
+  --profile fake-local \
+  --text "Semantic Compression preserves the conclusion while losing the interaction trajectory." \
+  --json
+
+{
+  printf '%s\n' "new llm-repl LLM REPL"
+  printf '%s\n' "llm"
+  printf '%s\n' "annotate user"
+  printf '%s\n' "Provider APIs and local LLM commands should both draft trajectory annotations."
+  printf '%s\n' "."
+  printf '%s\n' "y"
+  printf '%s\n' "recent 1"
+  printf '%s\n' "quit"
+} | python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" repl --llm-profile fake-local
+
+echo
 echo "Live run complete. Inspect artifacts under: ${tmp_root}"
