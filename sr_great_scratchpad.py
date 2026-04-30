@@ -102,6 +102,55 @@ Raw articulation:
 ---
 """
 
+CHAT_RUNTIME_SYSTEM = """You are running inside Great Scratchpad chat runtime.
+
+You are having a normal conversation with the user, but you may use the scratchpad
+as external memory. Preserve conversational trajectory, not just conclusions.
+
+You must return exactly one JSON object and no other text.
+
+To use memory, return:
+{"type":"action","action":"scratchpad.search","query":"...","top":5}
+{"type":"action","action":"scratchpad.recent","n":5}
+{"type":"action","action":"scratchpad.pack","query":"...","recent":6,"top":6,"include_guide":true}
+{"type":"action","action":"scratchpad.audit","json":true}
+{"type":"action","action":"scratchpad.add_note","text":"...","center":"...","trajectory":"...","anchors":"...","assumptions":"...","open_questions":"...","drift_risks":"..."}
+
+To answer the user, return:
+{"type":"final","message":"..."}
+
+Rules:
+- Use scratchpad tools when memory would help keep the topic centered.
+- Do not invent memory. Use retrieved source paths when relying on scratchpad material.
+- scratchpad.add_note should store externally visible trajectory notes, not hidden reasoning.
+- Never reveal hidden chain-of-thought. Concise rationale is okay when useful.
+"""
+
+CHAT_PROMPT_TEMPLATE = """Thread: {thread_id}
+
+Recent scratchpad context:
+---
+{recent_context}
+---
+
+Conversation so far in this runtime:
+---
+{history}
+---
+
+Current user message:
+---
+{user_text}
+---
+
+Tool observations so far:
+---
+{observations}
+---
+
+Return the next JSON object now.
+"""
+
 
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -487,7 +536,13 @@ def normalize_annotation(value: dict) -> dict[str, str]:
     return out
 
 
-def call_openai_compatible(cfg: dict, prompt: str) -> str:
+def compose_text_prompt(system_prompt: str, prompt: str) -> str:
+    if not system_prompt:
+        return prompt
+    return f"System:\n{system_prompt.strip()}\n\nUser:\n{prompt.strip()}\n"
+
+
+def call_openai_compatible(cfg: dict, prompt: str, system_prompt: str = "") -> str:
     api_key_env = cfg.get("api_key_env", "")
     api_key = os.environ.get(api_key_env, "") if api_key_env else cfg.get("api_key", "")
     if api_key_env and not api_key:
@@ -504,7 +559,7 @@ def call_openai_compatible(cfg: dict, prompt: str) -> str:
         "messages": [
             {
                 "role": "system",
-                "content": "Draft Great Scratchpad annotations as strict JSON only.",
+                "content": system_prompt or cfg.get("system_prompt", "Return the requested response."),
             },
             {"role": "user", "content": prompt},
         ],
@@ -540,11 +595,12 @@ def call_openai_compatible(cfg: dict, prompt: str) -> str:
         raise SystemExit(f"Provider API response did not look OpenAI-compatible: {data}") from exc
 
 
-def call_command_llm(cfg: dict, prompt: str) -> str:
+def call_command_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:
     command = cfg.get("command")
     if not command:
         raise SystemExit("command LLM config requires command.")
 
+    prompt = compose_text_prompt(system_prompt, prompt)
     raw_parts = command if isinstance(command, list) else shlex.split(str(command))
     model_path = str(cfg.get("model_path", ""))
     timeout = float(cfg.get("timeout", 120))
@@ -582,18 +638,18 @@ def call_command_llm(cfg: dict, prompt: str) -> str:
     return proc.stdout.strip()
 
 
-def call_llm(cfg: dict, prompt: str) -> str:
+def call_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:
     backend = str(cfg.get("backend", "")).lower()
     if backend in {"openai-compatible", "openai_compatible", "provider"}:
-        return call_openai_compatible(cfg, prompt)
+        return call_openai_compatible(cfg, prompt, system_prompt)
     if backend in {"command", "local", "local-command"}:
-        return call_command_llm(cfg, prompt)
+        return call_command_llm(cfg, prompt, system_prompt)
     raise SystemExit(f"Unknown LLM backend: {cfg.get('backend')!r}")
 
 
 def draft_annotation(raw: str, cfg: dict) -> dict[str, str]:
     prompt = build_annotation_prompt(raw)
-    output = call_llm(cfg, prompt)
+    output = call_llm(cfg, prompt, "Draft Great Scratchpad annotations as strict JSON only.")
     try:
         value = extract_json_object(output)
     except (ValueError, json.JSONDecodeError) as exc:
@@ -1110,14 +1166,17 @@ def cmd_compact(args: argparse.Namespace) -> None:
         print(f"Wrote block: {path.relative_to(tdir)}")
 
 
-def cmd_pack(args: argparse.Namespace) -> None:
-    root = root_path(args)
-    ensure_root(root)
-    tdir = ensure_thread(root, args.thread)
-
-    recent = recent_turn_files(tdir, args.recent)
-    hits = retrieve(tdir, args.query, args.top)
-
+def build_context_pack(
+    root: Path,
+    tdir: Path,
+    query: str,
+    recent_n: int,
+    top: int,
+    max_chars_per_doc: int,
+    include_guide: bool = False,
+) -> str:
+    recent = recent_turn_files(tdir, recent_n)
+    hits = retrieve(tdir, query, top)
     included: set[Path] = set()
     lines = [
         "# Great Scratchpad Context Pack",
@@ -1126,11 +1185,11 @@ def cmd_pack(args: argparse.Namespace) -> None:
         "",
         "## Query",
         "",
-        args.query,
+        query,
         "",
     ]
 
-    if args.include_guide:
+    if include_guide:
         guide_path = root / "guide.md"
         if guide_path.exists():
             lines.extend(
@@ -1155,7 +1214,7 @@ def cmd_pack(args: argparse.Namespace) -> None:
             [
                 f"### {path.relative_to(tdir)}",
                 "",
-                limit_text(path.read_text(encoding="utf-8"), args.max_chars_per_doc),
+                limit_text(path.read_text(encoding="utf-8"), max_chars_per_doc),
                 "",
             ]
         )
@@ -1170,18 +1229,352 @@ def cmd_pack(args: argparse.Namespace) -> None:
             [
                 f"### score={score:.1f} — {path.relative_to(tdir)}",
                 "",
-                limit_text(text, args.max_chars_per_doc),
+                limit_text(text, max_chars_per_doc),
                 "",
             ]
         )
 
-    output = "\n".join(lines).strip() + "\n"
+    return "\n".join(lines).strip() + "\n"
+
+
+def cmd_pack(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    ensure_root(root)
+    tdir = ensure_thread(root, args.thread)
+
+    output = build_context_pack(
+        root=root,
+        tdir=tdir,
+        query=args.query,
+        recent_n=args.recent,
+        top=args.top,
+        max_chars_per_doc=args.max_chars_per_doc,
+        include_guide=args.include_guide,
+    )
 
     if args.out:
         Path(args.out).write_text(output, encoding="utf-8")
         print(f"Wrote context pack: {args.out}")
     else:
         print(output)
+
+
+def render_search_results(tdir: Path, query: str, top: int = 5, width: int = 420) -> str:
+    hits = retrieve(tdir, query, top)
+    if not hits:
+        return "(no hits)"
+
+    out: list[str] = []
+    for i, (score, path, text) in enumerate(hits, start=1):
+        out.extend(
+            [
+                f"## Hit {i}: score={score:.1f} path={path.relative_to(tdir)}",
+                snippet(text, query, width=width),
+                "",
+            ]
+        )
+    return "\n".join(out).strip()
+
+
+def render_recent_turns(tdir: Path, n: int = 5, max_chars: int = 1600) -> str:
+    files = recent_turn_files(tdir, n)
+    if not files:
+        return "(no recent turns)"
+
+    out: list[str] = []
+    for path in files:
+        out.extend(
+            [
+                f"--- {path.relative_to(tdir)} ---",
+                limit_text(path.read_text(encoding="utf-8"), max_chars),
+                "",
+            ]
+        )
+    return "\n".join(out).strip()
+
+
+def render_audit(tdir: Path, as_json: bool = True, max_flags: int = 8) -> str:
+    files = sorted((tdir / "turns").glob("*.md"))
+    if not files:
+        return "(no turns to audit)"
+
+    results = [audit_turn_md(path) for path in files]
+    if as_json:
+        return json.dumps(results, ensure_ascii=False, indent=2)
+
+    out: list[str] = []
+    for r in results:
+        rel = Path(r["path"]).relative_to(tdir)
+        out.extend(
+            [
+                str(rel),
+                f"  raw_chars: {r['raw_chars']}",
+                f"  annotation_chars: {r['annotation_chars']}",
+                f"  ratio: {r['ratio']}",
+                f"  status: {r['status']}",
+            ]
+        )
+        flags = r["unsupported_anchors"]
+        if flags:
+            shown = flags[:max_flags]
+            out.append(f"  unsupported_anchors: {', '.join(shown)}")
+            if len(flags) > max_flags:
+                out.append(f"  ...and {len(flags) - max_flags} more")
+        out.append("")
+    return "\n".join(out).strip()
+
+
+def parse_chat_json(text: str) -> dict:
+    try:
+        return extract_json_object(text)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Could not parse chat runtime JSON: {exc}\nOutput:\n{text}") from exc
+
+
+def chat_history_text(history: list[dict[str, str]], max_chars: int = 4000) -> str:
+    lines: list[str] = []
+    for msg in history:
+        lines.append(f"{msg['role']}: {msg['content']}")
+    text = "\n\n".join(lines).strip()
+    return limit_text(text, max_chars) if text else "(empty)"
+
+
+def build_chat_prompt(
+    thread_id: str,
+    user_text: str,
+    recent_context: str,
+    history: list[dict[str, str]],
+    observations: list[str],
+    history_chars: int = 4000,
+) -> str:
+    return CHAT_PROMPT_TEMPLATE.format(
+        thread_id=thread_id,
+        recent_context=recent_context,
+        history=chat_history_text(history, history_chars),
+        user_text=user_text.strip(),
+        observations="\n\n".join(observations).strip() or "(none yet)",
+    )
+
+
+def maybe_confirm_write(prompt: str, yes: bool) -> bool:
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        return False
+    answer = input(f"{prompt} [y/N]> ").strip().lower()
+    return answer in {"y", "yes"}
+
+
+def run_scratchpad_action(
+    root: Path,
+    tdir: Path,
+    thread_id: str,
+    action_obj: dict,
+    yes: bool = False,
+    max_tool_chars: int = 6000,
+) -> str:
+    action = str(action_obj.get("action", "")).strip()
+
+    if action == "scratchpad.search":
+        query = str(action_obj.get("query", "")).strip()
+        if not query:
+            return "scratchpad.search failed: missing query"
+        top = int(action_obj.get("top", 5))
+        width = int(action_obj.get("width", 420))
+        return limit_text(render_search_results(tdir, query, top=top, width=width), max_tool_chars)
+
+    if action == "scratchpad.recent":
+        n = int(action_obj.get("n", 5))
+        max_chars = int(action_obj.get("max_chars", 1600))
+        return limit_text(render_recent_turns(tdir, n=n, max_chars=max_chars), max_tool_chars)
+
+    if action == "scratchpad.pack":
+        query = str(action_obj.get("query", "")).strip()
+        if not query:
+            return "scratchpad.pack failed: missing query"
+        output = build_context_pack(
+            root=root,
+            tdir=tdir,
+            query=query,
+            recent_n=int(action_obj.get("recent", 6)),
+            top=int(action_obj.get("top", 6)),
+            max_chars_per_doc=int(action_obj.get("max_chars_per_doc", 2200)),
+            include_guide=bool(action_obj.get("include_guide", False)),
+        )
+        return limit_text(output, max_tool_chars)
+
+    if action == "scratchpad.audit":
+        return limit_text(
+            render_audit(
+                tdir,
+                as_json=bool(action_obj.get("json", True)),
+                max_flags=int(action_obj.get("max_flags", 8)),
+            ),
+            max_tool_chars,
+        )
+
+    if action == "scratchpad.add_note":
+        raw = str(action_obj.get("text", "")).strip()
+        if not raw:
+            return "scratchpad.add_note failed: missing text"
+        if not maybe_confirm_write("Allow scratchpad.add_note write?", yes):
+            return "scratchpad.add_note skipped: write was not confirmed"
+        turn_no, path = add_turn(
+            root=root,
+            thread_id=thread_id,
+            speaker="note",
+            raw=raw,
+            center=str(action_obj.get("center", "")),
+            trajectory=str(action_obj.get("trajectory", "")),
+            anchors=str(action_obj.get("anchors", "")),
+            assumptions=str(action_obj.get("assumptions", "")),
+            open_questions=str(action_obj.get("open_questions", "")),
+            drift_risks=str(action_obj.get("drift_risks", "")),
+        )
+        return f"scratchpad.add_note wrote turn {turn_no:06d}: {path.relative_to(tdir)}"
+
+    return f"Unknown scratchpad action: {action!r}"
+
+
+def run_chat_turn(
+    root: Path,
+    tdir: Path,
+    thread_id: str,
+    cfg: dict,
+    user_text: str,
+    history: list[dict[str, str]],
+    max_steps: int = 4,
+    recent_n: int = 4,
+    yes: bool = False,
+    max_tool_chars: int = 6000,
+    verbose: bool = True,
+) -> str:
+    observations: list[str] = []
+    recent_context = render_recent_turns(tdir, n=recent_n, max_chars=1200)
+
+    for step in range(max_steps + 1):
+        prompt = build_chat_prompt(
+            thread_id=thread_id,
+            user_text=user_text,
+            recent_context=recent_context,
+            history=history,
+            observations=observations,
+        )
+        raw_output = call_llm(cfg, prompt, CHAT_RUNTIME_SYSTEM)
+        obj = parse_chat_json(raw_output)
+        kind = str(obj.get("type", "")).strip().lower()
+
+        if kind == "final" or "message" in obj:
+            message = str(obj.get("message", "")).strip()
+            if not message:
+                message = "(empty final message)"
+            return message
+
+        if kind != "action" and "action" not in obj:
+            return f"(chat runtime stopped: expected action/final JSON, got {obj})"
+
+        if step >= max_steps:
+            return "(chat runtime stopped: max tool steps reached before final answer)"
+
+        action_name = str(obj.get("action", "")).strip()
+        if verbose:
+            print(f"[tool] {action_name}")
+        observation = run_scratchpad_action(
+            root=root,
+            tdir=tdir,
+            thread_id=thread_id,
+            action_obj=obj,
+            yes=yes,
+            max_tool_chars=max_tool_chars,
+        )
+        observations.append(
+            f"Action {len(observations) + 1}: {action_name}\nObservation:\n{observation}"
+        )
+        if verbose:
+            print(limit_text(observation, 800))
+
+    return "(chat runtime stopped unexpectedly)"
+
+
+def ensure_thread_dirs(root: Path, thread_id: str, title: str = "") -> Path:
+    ensure_root(root)
+    tdir = thread_path(root, thread_id)
+    (tdir / "turns").mkdir(parents=True, exist_ok=True)
+    (tdir / "blocks").mkdir(parents=True, exist_ok=True)
+    meta_path = tdir / "meta.json"
+    if not meta_path.exists():
+        save_meta(
+            tdir,
+            {
+                "thread_id": safe_id(thread_id),
+                "title": title or thread_id,
+                "created_at": now_iso(),
+                "last_turn": 0,
+                "principle": "Store articulation trajectory, not only conclusions.",
+            },
+        )
+    return tdir
+
+
+def cmd_chat(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    tdir = ensure_thread_dirs(root, args.thread, title=args.thread)
+    thread_id = safe_id(args.thread)
+    cfg = load_llm_config(root, args.llm_config, args.profile)
+    history: list[dict[str, str]] = []
+
+    def run_one(user_text: str) -> None:
+        message = run_chat_turn(
+            root=root,
+            tdir=tdir,
+            thread_id=thread_id,
+            cfg=cfg,
+            user_text=user_text,
+            history=history,
+            max_steps=args.max_steps,
+            recent_n=args.recent,
+            yes=args.yes,
+            max_tool_chars=args.max_tool_chars,
+            verbose=not args.quiet,
+        )
+        print(message)
+        history.extend(
+            [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": message},
+            ]
+        )
+
+    if args.text or args.text_file:
+        run_one(read_text_arg(args.text, args.text_file))
+        return
+
+    print("Great Scratchpad chat runtime. Type /help or /quit.")
+    print(f"Thread: {thread_id}")
+    while True:
+        try:
+            user_text = input("you> ").strip()
+        except EOFError:
+            break
+        except KeyboardInterrupt:
+            print()
+            break
+
+        if not user_text:
+            continue
+        if user_text in {"/quit", "/exit"}:
+            break
+        if user_text == "/help":
+            print("/quit, /exit, /recent, /audit")
+            continue
+        if user_text == "/recent":
+            print(render_recent_turns(tdir, n=args.recent))
+            continue
+        if user_text == "/audit":
+            print(render_audit(tdir, as_json=False))
+            continue
+
+        run_one(user_text)
 
 
 REPL_HELP = """Great Scratchpad REPL commands:
@@ -1653,6 +2046,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.add_argument("--timeout", type=float, default=120)
     sp2.add_argument("--default", action="store_true", help="Make this the default profile.")
     sp2.set_defaults(func=cmd_llm_config_local)
+
+    sp = sub.add_parser("chat", help="Run a minimal LLM chat runtime with scratchpad actions.")
+    sp.add_argument("thread")
+    sp.add_argument("--text", default=None, help="Run one chat turn with this text.")
+    sp.add_argument("--text-file", default=None, help="Run one chat turn with text from this file.")
+    sp.add_argument("--llm-config", default=None, help="Path to llm.json. Default: ROOT/llm.json")
+    sp.add_argument("--profile", default=None, help="LLM profile name.")
+    sp.add_argument("--max-steps", type=int, default=4, help="Maximum scratchpad action steps per turn.")
+    sp.add_argument("--recent", type=int, default=4, help="Recent scratchpad turns included in each prompt.")
+    sp.add_argument("--max-tool-chars", type=int, default=6000, help="Maximum chars returned from each scratchpad action.")
+    sp.add_argument("--yes", action="store_true", help="Allow runtime write actions without prompting.")
+    sp.add_argument("--quiet", action="store_true", help="Do not print tool action progress.")
+    sp.set_defaults(func=cmd_chat)
 
     sp = sub.add_parser("new", help="Create or open a thread.")
     sp.add_argument("thread")
