@@ -152,6 +152,38 @@ Center pin:
 Save this turn? [y/N]> y
 ```
 
+### Chat runtime MVP
+
+`chat` は、LLMが会話しながら scratchpad action を要求できる最小runtimeです。
+
+```bash
+python3 -S sr_great_scratchpad.py chat monday-meawness --profile local
+```
+
+1ターンだけ試す:
+
+```bash
+python3 -S sr_great_scratchpad.py chat monday-meawness \
+  --profile local \
+  --text "前のSemantic CompressionとTopic Driftの話を踏まえて説明して"
+```
+
+runtime内でモデルは、次のようなJSONを返してscratchpadを使います。
+
+```json
+{"type":"action","action":"scratchpad.search","query":"Semantic Compression Topic Drift","top":5}
+```
+
+使えるaction:
+
+- `scratchpad.search`
+- `scratchpad.recent`
+- `scratchpad.pack`
+- `scratchpad.audit`
+- `scratchpad.add_note`
+
+書き込みactionはデフォルトで確認されます。実験用に自動許可する場合は `--yes` を付けます。
+
 ### Live run
 
 挙動を見ながら育てるための小さな実行例を用意しています。
@@ -318,6 +350,38 @@ Center pin:
 Save this turn? [y/N]> y
 ```
 
+### Chat Runtime MVP
+
+`chat` is the minimal runtime where the LLM can request scratchpad actions while talking.
+
+```bash
+python3 -S sr_great_scratchpad.py chat monday-meawness --profile local
+```
+
+Run a single turn:
+
+```bash
+python3 -S sr_great_scratchpad.py chat monday-meawness \
+  --profile local \
+  --text "Use the earlier Semantic Compression and Topic Drift context."
+```
+
+Inside the runtime, the model uses JSON actions such as:
+
+```json
+{"type":"action","action":"scratchpad.search","query":"Semantic Compression Topic Drift","top":5}
+```
+
+Available actions:
+
+- `scratchpad.search`
+- `scratchpad.recent`
+- `scratchpad.pack`
+- `scratchpad.audit`
+- `scratchpad.add_note`
+
+Write actions ask for confirmation by default. Use `--yes` for automated experiments.
+
 ### Live Run
 
 Run the included smoke test:
@@ -346,3 +410,4 @@ V0.2 prototype:
 - `audit` command for compression ratio and possible unsupported anchors
 - `pack --include-guide` for agent/human re-entry
 - Provider/local LLM profiles for draft annotation
+- Minimal `chat` runtime with scratchpad action loop

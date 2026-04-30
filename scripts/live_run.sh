@@ -82,4 +82,16 @@ python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" annotate \
 } | python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" repl --llm-profile fake-local
 
 echo
+echo "## Chat runtime fake model smoke"
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" llm-config local \
+  --profile fake-chat \
+  --command "python3 -S ${repo_root}/scripts/fake_chat_llm.py" \
+  --default
+
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" chat monday-meawness \
+  --profile fake-chat \
+  --text "前のSemantic CompressionとTopic Driftの話を踏まえて、runtimeの位置づけを短く見たい。" \
+  --yes
+
+echo
 echo "Live run complete. Inspect artifacts under: ${tmp_root}"
