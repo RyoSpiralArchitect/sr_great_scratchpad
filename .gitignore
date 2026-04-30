@@ -209,6 +209,7 @@ tempCodeRunnerFile.py
 # Great Scratchpad local memory/output
 .great_scratchpad/
 context_pack*.md
+llm.json
 
 # PyPI configuration file
 .pypirc

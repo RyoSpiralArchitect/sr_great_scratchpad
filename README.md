@@ -102,6 +102,56 @@ sr:monday-meawness> audit
 
 最初はCLI/REPLで挙動を見ます。どのタイミングで検索したくなるか、どのannotationが効くか、どこでTopic Driftを感じるかを観測してから、TUIやフロントエンドの形を決めます。
 
+### LLM接続
+
+LLMはannotationの「確定者」ではなく draft producer として使います。provider APIもlocal LLMも `llm.json` のprofileとして設定し、`annotate` またはREPLの `annotate` から呼び出します。
+
+OpenAI-compatible provider API:
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config provider \
+  --profile provider \
+  --base-url "https://YOUR_PROVIDER/v1" \
+  --api-key-env YOUR_PROVIDER_API_KEY \
+  --model YOUR_MODEL \
+  --default
+```
+
+Local command-backed LLM:
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config local \
+  --profile local \
+  --command "llama-cli -m {model_path} -p {prompt}" \
+  --model-path "/path/to/model.gguf" \
+  --default
+```
+
+`{prompt}` をcommandに含めない場合、promptはstdinで渡されます。`{prompt_file}` も使えます。
+
+annotation draft:
+
+```bash
+python3 -S sr_great_scratchpad.py annotate \
+  --profile local \
+  --text-file log.md \
+  --json
+```
+
+REPL:
+
+```bash
+python3 -S sr_great_scratchpad.py repl monday-meawness --llm-profile local
+
+sr:monday-meawness> annotate user
+Raw articulation (finish with a single '.' line)
+| ここに別タブの会話ログを貼る
+| .
+Center pin:
+...
+Save this turn? [y/N]> y
+```
+
 ### Live run
 
 挙動を見ながら育てるための小さな実行例を用意しています。
@@ -218,6 +268,56 @@ sr:monday-meawness> audit
 
 The plan is to learn the interaction before freezing the product surface: observe when retrieval is wanted, which annotations actually help, and where Topic Drift becomes visible.
 
+### LLM Connection
+
+The LLM is treated as a draft producer, not as an authority. Provider APIs and local LLM commands are both configured as profiles in `llm.json`, then used by `annotate` or the REPL `annotate` command.
+
+OpenAI-compatible provider API:
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config provider \
+  --profile provider \
+  --base-url "https://YOUR_PROVIDER/v1" \
+  --api-key-env YOUR_PROVIDER_API_KEY \
+  --model YOUR_MODEL \
+  --default
+```
+
+Local command-backed LLM:
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config local \
+  --profile local \
+  --command "llama-cli -m {model_path} -p {prompt}" \
+  --model-path "/path/to/model.gguf" \
+  --default
+```
+
+If `{prompt}` is not included in the command, the prompt is passed on stdin. `{prompt_file}` is also available.
+
+Draft annotations:
+
+```bash
+python3 -S sr_great_scratchpad.py annotate \
+  --profile local \
+  --text-file log.md \
+  --json
+```
+
+REPL:
+
+```bash
+python3 -S sr_great_scratchpad.py repl monday-meawness --llm-profile local
+
+sr:monday-meawness> annotate user
+Raw articulation (finish with a single '.' line)
+| Paste a conversation segment from another tab.
+| .
+Center pin:
+...
+Save this turn? [y/N]> y
+```
+
 ### Live Run
 
 Run the included smoke test:
@@ -245,3 +345,4 @@ V0.2 prototype:
 - Annotation guide generated at init time
 - `audit` command for compression ratio and possible unsupported anchors
 - `pack --include-guide` for agent/human re-entry
+- Provider/local LLM profiles for draft annotation

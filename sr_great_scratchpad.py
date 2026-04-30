@@ -7,7 +7,11 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
+import tempfile
+import urllib.error
+import urllib.request
 from collections import Counter
 from pathlib import Path
 from typing import Iterable
@@ -24,6 +28,15 @@ JP_PHRASE_RE = re.compile(
     r"[ぁ-んァ-ヶー一-龥々〆〤]{4,24}",
     re.UNICODE,
 )
+LLM_CONFIG_DEFAULT = "llm.json"
+ANNOTATION_FIELDS = [
+    "center",
+    "trajectory",
+    "anchors",
+    "assumptions",
+    "open_questions",
+    "drift_risks",
+]
 
 ANNOTATION_GUIDE = """# Great Scratchpad annotation guide
 これはあなた、または未来の別スレッドのあなたのためのメモ帳です。
@@ -58,6 +71,35 @@ ANNOTATION_GUIDE = """# Great Scratchpad annotation guide
 - 結論だけの抜き出し
 - 「つまり〜」だけで済ませること
 - rawにない概念を、あったことにすること
+"""
+
+ANNOTATION_PROMPT_TEMPLATE = """You are drafting Great Scratchpad annotations.
+
+Use only the externally visible raw articulation below.
+Do not invent hidden reasoning, private chain-of-thought, or facts not present in the raw articulation.
+Preserve trajectory, not just conclusions.
+Keep uncertainty, local wording, coined terms, metaphors, and drift risks when visible.
+
+Return only a JSON object with these exact string fields:
+- center
+- trajectory
+- anchors
+- assumptions
+- open_questions
+- drift_risks
+
+Field meanings:
+- center: the center pin of this turn
+- trajectory: how this turn moves the conversation
+- anchors: reusable terms, metaphors, phrases, or names, comma-separated
+- assumptions: local assumptions visible in this turn
+- open_questions: unresolved questions left by this turn
+- drift_risks: ways future context might drift
+
+Raw articulation:
+---
+{raw}
+---
 """
 
 
@@ -123,6 +165,68 @@ def save_meta(tdir: Path, meta: dict) -> None:
         json.dumps(meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def llm_config_path(root: Path, explicit_path: str | None = None) -> Path:
+    if explicit_path:
+        return Path(explicit_path).expanduser().resolve()
+    return root / LLM_CONFIG_DEFAULT
+
+
+def load_llm_config(root: Path, explicit_path: str | None = None, profile: str | None = None) -> dict:
+    path = llm_config_path(root, explicit_path)
+    if not path.exists():
+        raise SystemExit(
+            f"LLM config not found: {path}. Create one with: "
+            "llm-config provider ... or llm-config local ..."
+        )
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if "profiles" not in data:
+        cfg = dict(data)
+        cfg.setdefault("profile", profile or "default")
+        cfg["_config_path"] = str(path)
+        return cfg
+
+    profiles = data.get("profiles") or {}
+    profile_name = profile or data.get("default_profile")
+    if not profile_name:
+        if len(profiles) == 1:
+            profile_name = next(iter(profiles))
+        else:
+            names = ", ".join(sorted(profiles)) or "(none)"
+            raise SystemExit(f"LLM profile not specified. Available profiles: {names}")
+
+    if profile_name not in profiles:
+        names = ", ".join(sorted(profiles)) or "(none)"
+        raise SystemExit(f"LLM profile not found: {profile_name}. Available profiles: {names}")
+
+    cfg = dict(profiles[profile_name])
+    cfg["profile"] = profile_name
+    cfg["_config_path"] = str(path)
+    return cfg
+
+
+def read_llm_config_document(path: Path) -> dict:
+    if not path.exists():
+        return {"created_at": now_iso(), "profiles": {}, "default_profile": ""}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if "profiles" not in data:
+        profile = data.get("profile") or "default"
+        data = {
+            "created_at": data.get("created_at", now_iso()),
+            "profiles": {profile: {k: v for k, v in data.items() if k != "profile"}},
+            "default_profile": profile,
+        }
+    data.setdefault("profiles", {})
+    data.setdefault("default_profile", "")
+    return data
+
+
+def write_llm_config_document(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data["updated_at"] = now_iso()
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def read_text_arg(text: str | None, text_file: str | None) -> str:
@@ -347,6 +451,169 @@ def limit_text(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip() + "\n\n...[truncated]"
+
+
+def build_annotation_prompt(raw: str) -> str:
+    return ANNOTATION_PROMPT_TEMPLATE.format(raw=raw.strip())
+
+
+def extract_json_object(text: str) -> dict:
+    text = text.strip()
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("LLM output did not contain a JSON object.") from None
+        value = json.loads(text[start:end + 1])
+
+    if not isinstance(value, dict):
+        raise ValueError("LLM output JSON must be an object.")
+    return value
+
+
+def normalize_annotation(value: dict) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for field in ANNOTATION_FIELDS:
+        item = value.get(field, "")
+        if isinstance(item, list):
+            item = ", ".join(str(x).strip() for x in item if str(x).strip())
+        elif item is None:
+            item = ""
+        else:
+            item = str(item)
+        out[field] = item.strip()
+    return out
+
+
+def call_openai_compatible(cfg: dict, prompt: str) -> str:
+    api_key_env = cfg.get("api_key_env", "")
+    api_key = os.environ.get(api_key_env, "") if api_key_env else cfg.get("api_key", "")
+    if api_key_env and not api_key:
+        raise SystemExit(f"Environment variable is not set: {api_key_env}")
+
+    url = cfg.get("base_url") or cfg.get("url")
+    if not url:
+        raise SystemExit("openai-compatible LLM config requires base_url.")
+    if not url.rstrip("/").endswith("/chat/completions"):
+        url = url.rstrip("/") + "/chat/completions"
+
+    body = {
+        "model": cfg.get("model", ""),
+        "messages": [
+            {
+                "role": "system",
+                "content": "Draft Great Scratchpad annotations as strict JSON only.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": float(cfg.get("temperature", 0.2)),
+        "max_tokens": int(cfg.get("max_tokens", 900)),
+    }
+    if not body["model"]:
+        raise SystemExit("openai-compatible LLM config requires model.")
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=float(cfg.get("timeout", 120))) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"Provider API returned HTTP {exc.code}: {body_text}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"Provider API request failed: {exc}") from exc
+
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise SystemExit(f"Provider API response did not look OpenAI-compatible: {data}") from exc
+
+
+def call_command_llm(cfg: dict, prompt: str) -> str:
+    command = cfg.get("command")
+    if not command:
+        raise SystemExit("command LLM config requires command.")
+
+    raw_parts = command if isinstance(command, list) else shlex.split(str(command))
+    model_path = str(cfg.get("model_path", ""))
+    timeout = float(cfg.get("timeout", 120))
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=True) as prompt_file:
+        prompt_file.write(prompt)
+        prompt_file.flush()
+        values = {
+            "model_path": model_path,
+            "prompt": prompt,
+            "prompt_file": prompt_file.name,
+        }
+        parts = [part.format(**values) for part in raw_parts]
+        has_prompt_placeholder = any("{prompt}" in part or "{prompt_file}" in part for part in raw_parts)
+        input_text = None if has_prompt_placeholder else prompt
+
+        try:
+            proc = subprocess.run(
+                parts,
+                input=input_text,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise SystemExit(f"Local LLM command not found: {parts[0]}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise SystemExit(f"Local LLM command timed out after {timeout:g}s.") from exc
+
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip()
+        raise SystemExit(f"Local LLM command failed with exit {proc.returncode}: {stderr}")
+
+    return proc.stdout.strip()
+
+
+def call_llm(cfg: dict, prompt: str) -> str:
+    backend = str(cfg.get("backend", "")).lower()
+    if backend in {"openai-compatible", "openai_compatible", "provider"}:
+        return call_openai_compatible(cfg, prompt)
+    if backend in {"command", "local", "local-command"}:
+        return call_command_llm(cfg, prompt)
+    raise SystemExit(f"Unknown LLM backend: {cfg.get('backend')!r}")
+
+
+def draft_annotation(raw: str, cfg: dict) -> dict[str, str]:
+    prompt = build_annotation_prompt(raw)
+    output = call_llm(cfg, prompt)
+    try:
+        value = extract_json_object(output)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Could not parse LLM annotation JSON: {exc}\nOutput:\n{output}") from exc
+    return normalize_annotation(value)
+
+
+def print_annotation(annotation: dict[str, str]) -> None:
+    labels = {
+        "center": "Center pin",
+        "trajectory": "Trajectory",
+        "anchors": "Anchors",
+        "assumptions": "Local assumptions",
+        "open_questions": "Open questions",
+        "drift_risks": "Drift risks",
+    }
+    for field in ANNOTATION_FIELDS:
+        print(f"{labels[field]}:")
+        print(annotation.get(field, "") or "(none)")
+        print()
 
 
 def contains_cjk(s: str) -> bool:
@@ -655,6 +922,83 @@ def cmd_guide(args: argparse.Namespace) -> None:
     print(guide.read_text(encoding="utf-8"))
 
 
+def cmd_llm_config_show(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    ensure_root(root)
+    path = llm_config_path(root, args.config)
+    if not path.exists():
+        print(f"(no llm config at {path})")
+        return
+    print(path.read_text(encoding="utf-8"))
+
+
+def cmd_llm_config_provider(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    ensure_root(root)
+    path = llm_config_path(root, args.config)
+    data = read_llm_config_document(path)
+    profile = args.profile
+    data["profiles"][profile] = {
+        "backend": "openai-compatible",
+        "base_url": args.base_url,
+        "api_key_env": args.api_key_env,
+        "model": args.model,
+        "temperature": args.temperature,
+        "max_tokens": args.max_tokens,
+        "timeout": args.timeout,
+    }
+    if args.default or not data.get("default_profile"):
+        data["default_profile"] = profile
+    write_llm_config_document(path, data)
+    print(f"Wrote provider LLM profile {profile!r}: {path}")
+
+
+def cmd_llm_config_local(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    ensure_root(root)
+    path = llm_config_path(root, args.config)
+    data = read_llm_config_document(path)
+    profile = args.profile
+    data["profiles"][profile] = {
+        "backend": "command",
+        "command": args.command,
+        "model_path": args.model_path,
+        "timeout": args.timeout,
+    }
+    if args.default or not data.get("default_profile"):
+        data["default_profile"] = profile
+    write_llm_config_document(path, data)
+    print(f"Wrote local command LLM profile {profile!r}: {path}")
+
+
+def cmd_annotate(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    ensure_root(root)
+    raw = read_text_arg(args.text, args.text_file)
+    cfg = load_llm_config(root, args.llm_config, args.profile)
+    annotation = draft_annotation(raw, cfg)
+
+    if args.json:
+        print(json.dumps(annotation, ensure_ascii=False, indent=2))
+    else:
+        print_annotation(annotation)
+
+    if args.save_thread:
+        turn_no, path = add_turn(
+            root=root,
+            thread_id=args.save_thread,
+            speaker=args.speaker,
+            raw=raw,
+            center=annotation["center"],
+            trajectory=annotation["trajectory"],
+            anchors=annotation["anchors"],
+            assumptions=annotation["assumptions"],
+            open_questions=annotation["open_questions"],
+            drift_risks=annotation["drift_risks"],
+        )
+        print(f"Saved turn {turn_no:06d}: {path}")
+
+
 def compact_one_range(
     tdir: Path,
     start: int,
@@ -854,6 +1198,8 @@ REPL_HELP = """Great Scratchpad REPL commands:
   recent [N]                   Show recent turns from the active thread.
   pack QUERY [options]         Build a context pack from the active thread.
   audit [--json]               Audit the active thread.
+  llm                          Show active LLM config.
+  annotate [SPEAKER] [THREAD]  Draft annotations with the configured LLM.
   guide                        Print the annotation guide.
   compact [options]            Create trajectory blocks for the active thread.
   quit | exit                  Leave the REPL.
@@ -984,7 +1330,79 @@ def _repl_handle_add(root: Path, active_thread: str | None, tokens: list[str]) -
     return thread_id
 
 
-def _repl_run_command(root: Path, active_thread: str | None, line: str) -> tuple[str | None, bool]:
+def _repl_show_llm(root: Path, explicit_path: str | None, profile: str | None) -> None:
+    path = llm_config_path(root, explicit_path)
+    print(f"LLM config: {path}")
+    if not path.exists():
+        print("(not configured)")
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if "profiles" in data:
+        default_profile = data.get("default_profile") or "(none)"
+        profiles = ", ".join(sorted(data.get("profiles", {}))) or "(none)"
+        print(f"Default profile: {default_profile}")
+        print(f"REPL profile override: {profile or '(none)'}")
+        print(f"Profiles: {profiles}")
+    else:
+        print(f"Backend: {data.get('backend', '(unknown)')}")
+
+
+def _repl_handle_annotate(
+    root: Path,
+    active_thread: str | None,
+    tokens: list[str],
+    explicit_llm_config: str | None,
+    llm_profile: str | None,
+) -> str | None:
+    speaker = tokens[1] if len(tokens) > 1 else "note"
+    thread_id = tokens[2] if len(tokens) > 2 else active_thread
+
+    if speaker not in {"user", "assistant", "system", "tool", "note"}:
+        print("Speaker must be one of: user, assistant, system, tool, note")
+        return active_thread
+
+    thread_id = _active_thread_or_warn(thread_id)
+    if not thread_id:
+        return active_thread
+
+    raw = _input_block("Raw articulation")
+    if not raw:
+        print("No raw articulation; skipped.")
+        return active_thread
+
+    cfg = load_llm_config(root, explicit_llm_config, llm_profile)
+    annotation = draft_annotation(raw, cfg)
+    print()
+    print_annotation(annotation)
+
+    answer = _input_line("Save this turn? [y/N]> ").strip().lower()
+    if answer not in {"y", "yes"}:
+        print("Skipped save.")
+        return thread_id
+
+    turn_no, path = add_turn(
+        root=root,
+        thread_id=thread_id,
+        speaker=speaker,
+        raw=raw,
+        center=annotation["center"],
+        trajectory=annotation["trajectory"],
+        anchors=annotation["anchors"],
+        assumptions=annotation["assumptions"],
+        open_questions=annotation["open_questions"],
+        drift_risks=annotation["drift_risks"],
+    )
+    print(f"Added turn {turn_no:06d}: {path}")
+    return thread_id
+
+
+def _repl_run_command(
+    root: Path,
+    active_thread: str | None,
+    line: str,
+    explicit_llm_config: str | None,
+    llm_profile: str | None,
+) -> tuple[str | None, bool]:
     try:
         tokens = shlex.split(line)
     except ValueError as exc:
@@ -1035,6 +1453,13 @@ def _repl_run_command(root: Path, active_thread: str | None, line: str) -> tuple
 
     if cmd in {"add", "note"}:
         return _repl_handle_add(root, active_thread, tokens), True
+
+    if cmd == "llm":
+        _repl_show_llm(root, explicit_llm_config, llm_profile)
+        return active_thread, True
+
+    if cmd == "annotate":
+        return _repl_handle_annotate(root, active_thread, tokens, explicit_llm_config, llm_profile), True
 
     if cmd == "search":
         thread_id = _active_thread_or_warn(active_thread)
@@ -1143,12 +1568,20 @@ def cmd_repl(args: argparse.Namespace) -> None:
     print(f"Root: {root}")
     if active_thread:
         print(f"Active thread: {active_thread}")
+    if args.llm_config or args.llm_profile:
+        _repl_show_llm(root, args.llm_config, args.llm_profile)
 
     while True:
         prompt = f"sr:{active_thread}> " if active_thread else "sr> "
         try:
             line = _input_line(prompt)
-            active_thread, keep_running = _repl_run_command(root, active_thread, line)
+            active_thread, keep_running = _repl_run_command(
+                root,
+                active_thread,
+                line,
+                args.llm_config,
+                args.llm_profile,
+            )
         except KeyboardInterrupt:
             print()
             break
@@ -1181,7 +1614,45 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("repl", help="Start an interactive Great Scratchpad REPL.")
     sp.add_argument("thread", nargs="?", default=None)
+    sp.add_argument("--llm-config", default=None, help="Path to llm.json. Default: ROOT/llm.json")
+    sp.add_argument("--llm-profile", default=None, help="LLM profile name to use in the REPL.")
     sp.set_defaults(func=cmd_repl)
+
+    sp = sub.add_parser("annotate", help="Draft trajectory annotations with a configured LLM.")
+    sp.add_argument("--text", default=None)
+    sp.add_argument("--text-file", default=None)
+    sp.add_argument("--llm-config", default=None, help="Path to llm.json. Default: ROOT/llm.json")
+    sp.add_argument("--profile", default=None, help="LLM profile name.")
+    sp.add_argument("--json", action="store_true", help="Print annotation JSON.")
+    sp.add_argument("--save-thread", default=None, help="Save drafted annotation as a turn in THREAD.")
+    sp.add_argument("--speaker", default="note", choices=["user", "assistant", "system", "tool", "note"])
+    sp.set_defaults(func=cmd_annotate)
+
+    sp = sub.add_parser("llm-config", help="Create or inspect LLM provider/local profiles.")
+    sp.add_argument("--config", default=None, help="Path to llm.json. Default: ROOT/llm.json")
+    llm_sub = sp.add_subparsers(dest="llm_cmd", required=True)
+
+    sp2 = llm_sub.add_parser("show", help="Print LLM config.")
+    sp2.set_defaults(func=cmd_llm_config_show)
+
+    sp2 = llm_sub.add_parser("provider", help="Configure an OpenAI-compatible provider API.")
+    sp2.add_argument("--profile", default="provider")
+    sp2.add_argument("--base-url", required=True, help="Base URL or full /chat/completions URL.")
+    sp2.add_argument("--api-key-env", default="", help="Environment variable containing the API key.")
+    sp2.add_argument("--model", required=True)
+    sp2.add_argument("--temperature", type=float, default=0.2)
+    sp2.add_argument("--max-tokens", type=int, default=900)
+    sp2.add_argument("--timeout", type=float, default=120)
+    sp2.add_argument("--default", action="store_true", help="Make this the default profile.")
+    sp2.set_defaults(func=cmd_llm_config_provider)
+
+    sp2 = llm_sub.add_parser("local", help="Configure a local command-backed LLM.")
+    sp2.add_argument("--profile", default="local")
+    sp2.add_argument("--command", required=True, help="Command to run. Prompt is passed on stdin unless {prompt} or {prompt_file} is used.")
+    sp2.add_argument("--model-path", default="", help="Optional local model path available as {model_path}.")
+    sp2.add_argument("--timeout", type=float, default=120)
+    sp2.add_argument("--default", action="store_true", help="Make this the default profile.")
+    sp2.set_defaults(func=cmd_llm_config_local)
 
     sp = sub.add_parser("new", help="Create or open a thread.")
     sp.add_argument("thread")
