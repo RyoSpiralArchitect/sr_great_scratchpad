@@ -96,4 +96,18 @@ python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" chat monda
 wc -l "${tmp_root}/chat_trace.jsonl"
 
 echo
+echo "## Chat runtime queued write smoke"
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" chat monday-meawness \
+  --profile fake-chat \
+  --text "同じruntimeで、memory writeをreview queueに回してみたい。" \
+  --yes \
+  --queue-writes \
+  --quiet \
+  --trace-out "${tmp_root}/chat_queue_trace.jsonl"
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review list monday-meawness
+queued_item="$(find "${tmp_root}/review_queue/monday-meawness" -name '*.json' -print -quit)"
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review apply monday-meawness "$(basename "${queued_item}")"
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review list monday-meawness --status applied
+
+echo
 echo "Live run complete. Inspect artifacts under: ${tmp_root}"

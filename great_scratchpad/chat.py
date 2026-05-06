@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+import time
 
 from .constants import CHAT_PROMPT_TEMPLATE, CHAT_RUNTIME_SYSTEM
-from .llm import call_llm, extract_json_object
-from .memory import add_turn, build_context_pack, render_audit, render_recent_turns, render_search_results
+from .llm import call_llm_result, extract_json_object, llm_config_metadata
+from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_recent_turns, render_search_results
 from .storage import now_iso
 from .text import limit_text
 
@@ -93,6 +94,19 @@ def append_trace_events(path: Path, events: list[dict]) -> None:
         for event in events:
             f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
 
+def llm_trace(result: dict) -> dict:
+    return {
+        "backend": result.get("backend", ""),
+        "profile": result.get("profile", ""),
+        "model": result.get("model", ""),
+        "model_path": result.get("model_path", ""),
+        "response_model": result.get("response_model", ""),
+        "prompt_chars": result.get("prompt_chars", 0),
+        "system_prompt_chars": result.get("system_prompt_chars", 0),
+        "duration_ms": result.get("duration_ms", 0),
+        "usage": result.get("usage", {}),
+    }
+
 def run_scratchpad_action(
     root: Path,
     tdir: Path,
@@ -100,6 +114,7 @@ def run_scratchpad_action(
     action_obj: dict,
     yes: bool = False,
     max_tool_chars: int = 6000,
+    queue_writes: bool = False,
 ) -> str:
     action = str(action_obj.get("action", "")).strip()
 
@@ -152,6 +167,9 @@ def run_scratchpad_action(
             raw = str(action_obj.get("text", "")).strip()
             if not raw:
                 return "scratchpad.add_note failed: missing text"
+            if queue_writes:
+                path = queue_add_note(root, thread_id, action_obj)
+                return f"scratchpad.add_note queued for review: {path.relative_to(root)}"
             if not maybe_confirm_write("Allow scratchpad.add_note write?", yes):
                 return "scratchpad.add_note skipped: write was not confirmed"
             turn_no, path = add_turn(
@@ -185,9 +203,15 @@ def run_chat_turn(
     max_tool_chars: int = 6000,
     verbose: bool = True,
     trace_events: list[dict] | None = None,
+    json_repair_steps: int = 1,
+    queue_writes: bool = False,
 ) -> str:
     observations: list[str] = []
     recent_context = render_recent_turns(tdir, n=recent_n, max_chars=1200)
+    turn_started = time.perf_counter()
+    tool_steps = 0
+    model_calls = 0
+    repairs_used = 0
     record_trace(
         trace_events,
         "turn_start",
@@ -195,9 +219,12 @@ def run_chat_turn(
         user_text=user_text,
         recent_n=recent_n,
         max_steps=max_steps,
+        json_repair_steps=json_repair_steps,
+        queue_writes=queue_writes,
+        llm=llm_config_metadata(cfg),
     )
 
-    for step in range(max_steps + 1):
+    while True:
         prompt = build_chat_prompt(
             thread_id=thread_id,
             user_text=user_text,
@@ -205,26 +232,111 @@ def run_chat_turn(
             history=history,
             observations=observations,
         )
-        raw_output = call_llm(cfg, prompt, CHAT_RUNTIME_SYSTEM)
-        obj = parse_chat_json(raw_output)
+        try:
+            result = call_llm_result(cfg, prompt, CHAT_RUNTIME_SYSTEM)
+        except SystemExit as exc:
+            record_trace(
+                trace_events,
+                "error",
+                tool_step=tool_steps,
+                model_calls=model_calls,
+                error=str(exc),
+                duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
+                llm={
+                    **llm_config_metadata(cfg),
+                    "prompt_chars": len(prompt),
+                    "system_prompt_chars": len(CHAT_RUNTIME_SYSTEM),
+                },
+            )
+            raise
+        model_calls += 1
+        raw_output = str(result.get("content", ""))
+        try:
+            obj = extract_json_object(raw_output)
+        except (ValueError, json.JSONDecodeError) as exc:
+            record_trace(
+                trace_events,
+                "json_parse_error",
+                tool_step=tool_steps,
+                model_calls=model_calls,
+                error=str(exc),
+                output=limit_text(raw_output, 2000),
+                llm=llm_trace(result),
+            )
+            if repairs_used < max(0, json_repair_steps):
+                repairs_used += 1
+                observations.append(
+                    "The previous model output was not valid JSON. "
+                    f"Parse error: {exc}. "
+                    "Return exactly one JSON object using either a scratchpad action or final message. "
+                    f"Previous output excerpt:\n{limit_text(raw_output, 1200)}"
+                )
+                continue
+            message = f"(chat runtime stopped: could not parse model JSON after {repairs_used} repair attempt(s): {exc})"
+            record_trace(
+                trace_events,
+                "stopped",
+                reason="json_parse_error",
+                message=message,
+                tool_steps=tool_steps,
+                model_calls=model_calls,
+                repair_attempts=repairs_used,
+                duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
+            )
+            return message
         kind = str(obj.get("type", "")).strip().lower()
-        record_trace(trace_events, "model_output", step=step, kind=kind, payload=obj)
+        record_trace(
+            trace_events,
+            "model_output",
+            tool_step=tool_steps,
+            model_calls=model_calls,
+            kind=kind,
+            payload=obj,
+            raw_output_chars=len(raw_output),
+            llm=llm_trace(result),
+        )
 
         if kind == "final" or "message" in obj:
             message = str(obj.get("message", "")).strip()
             if not message:
                 message = "(empty final message)"
-            record_trace(trace_events, "final", step=step, message=message)
+            record_trace(
+                trace_events,
+                "final",
+                message=message,
+                tool_steps=tool_steps,
+                model_calls=model_calls,
+                repair_attempts=repairs_used,
+                duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
+            )
             return message
 
         if kind != "action" and "action" not in obj:
             message = f"(chat runtime stopped: expected action/final JSON, got {obj})"
-            record_trace(trace_events, "stopped", step=step, reason="unexpected_payload", message=message)
+            record_trace(
+                trace_events,
+                "stopped",
+                reason="unexpected_payload",
+                message=message,
+                tool_steps=tool_steps,
+                model_calls=model_calls,
+                repair_attempts=repairs_used,
+                duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
+            )
             return message
 
-        if step >= max_steps:
+        if tool_steps >= max_steps:
             message = "(chat runtime stopped: max tool steps reached before final answer)"
-            record_trace(trace_events, "stopped", step=step, reason="max_steps", message=message)
+            record_trace(
+                trace_events,
+                "stopped",
+                reason="max_steps",
+                message=message,
+                tool_steps=tool_steps,
+                model_calls=model_calls,
+                repair_attempts=repairs_used,
+                duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
+            )
             return message
 
         action_name = str(obj.get("action", "")).strip()
@@ -237,13 +349,16 @@ def run_chat_turn(
             action_obj=obj,
             yes=yes,
             max_tool_chars=max_tool_chars,
+            queue_writes=queue_writes,
         )
+        tool_steps += 1
         record_trace(
             trace_events,
             "tool_observation",
-            step=step,
+            tool_step=tool_steps,
             action=action_name,
             observation=observation,
+            observation_chars=len(observation),
         )
         observations.append(
             f"Action {len(observations) + 1}: {action_name}\nObservation:\n{observation}"
@@ -252,5 +367,14 @@ def run_chat_turn(
             print(limit_text(observation, 800))
 
     message = "(chat runtime stopped unexpectedly)"
-    record_trace(trace_events, "stopped", reason="unexpected_loop_exit", message=message)
+    record_trace(
+        trace_events,
+        "stopped",
+        reason="unexpected_loop_exit",
+        message=message,
+        tool_steps=tool_steps,
+        model_calls=model_calls,
+        repair_attempts=repairs_used,
+        duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
+    )
     return message

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 from .audit import audit_turn_md
-from .storage import ensure_root, ensure_thread, load_meta, now_iso, save_meta
+from .storage import ensure_root, ensure_thread, load_meta, now_iso, safe_id, save_meta
 from .text import auto_keys, build_turn_md, first_heading, iter_markdown_files, limit_text, parse_section, score_doc, snippet
 
 def recent_turn_files(tdir: Path, n: int) -> list[Path]:
@@ -73,6 +74,96 @@ def add_turn(
     save_meta(tdir, meta)
 
     return turn_no, path
+
+def review_queue_dir(root: Path, thread_id: str) -> Path:
+    return root / "review_queue" / safe_id(thread_id)
+
+def review_item_path(root: Path, thread_id: str, item_id: str) -> Path:
+    item_id = Path(item_id).name
+    if not item_id.endswith(".json"):
+        item_id += ".json"
+    return review_queue_dir(root, thread_id) / item_id
+
+def queue_add_note(root: Path, thread_id: str, action_obj: dict) -> Path:
+    ensure_root(root)
+    ensure_thread(root, thread_id)
+    qdir = review_queue_dir(root, thread_id)
+    qdir.mkdir(parents=True, exist_ok=True)
+    item_id = f"{now_iso().replace(':', '').replace('+', '-')}-{uuid.uuid4().hex[:8]}.json"
+    item = {
+        "id": item_id,
+        "status": "pending",
+        "created_at": now_iso(),
+        "thread_id": safe_id(thread_id),
+        "action": "scratchpad.add_note",
+        "text": str(action_obj.get("text", "")),
+        "center": str(action_obj.get("center", "")),
+        "trajectory": str(action_obj.get("trajectory", "")),
+        "anchors": str(action_obj.get("anchors", "")),
+        "assumptions": str(action_obj.get("assumptions", "")),
+        "open_questions": str(action_obj.get("open_questions", "")),
+        "drift_risks": str(action_obj.get("drift_risks", "")),
+    }
+    path = qdir / item_id
+    path.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+def load_review_item(root: Path, thread_id: str, item_id: str) -> tuple[dict, Path]:
+    path = review_item_path(root, thread_id, item_id)
+    if not path.exists():
+        raise SystemExit(f"Review item not found: {path}")
+    return json.loads(path.read_text(encoding="utf-8")), path
+
+def save_review_item(path: Path, item: dict) -> None:
+    item["updated_at"] = now_iso()
+    path.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def iter_review_items(root: Path, thread_id: str | None = None, status: str = "pending") -> list[tuple[Path, dict]]:
+    base = root / "review_queue"
+    if not base.exists():
+        return []
+    roots = [review_queue_dir(root, thread_id)] if thread_id else [p for p in sorted(base.iterdir()) if p.is_dir()]
+    out: list[tuple[Path, dict]] = []
+    for qdir in roots:
+        if not qdir.exists():
+            continue
+        for path in sorted(qdir.glob("*.json")):
+            item = json.loads(path.read_text(encoding="utf-8"))
+            if status and item.get("status") != status:
+                continue
+            out.append((path, item))
+    return out
+
+def apply_review_item(root: Path, thread_id: str, item_id: str) -> tuple[int, Path, Path]:
+    item, item_path = load_review_item(root, thread_id, item_id)
+    if item.get("status") != "pending":
+        raise SystemExit(f"Review item is not pending: {item_path.name} status={item.get('status')}")
+    turn_no, turn_path = add_turn(
+        root=root,
+        thread_id=thread_id,
+        speaker="note",
+        raw=str(item.get("text", "")),
+        center=str(item.get("center", "")),
+        trajectory=str(item.get("trajectory", "")),
+        anchors=str(item.get("anchors", "")),
+        assumptions=str(item.get("assumptions", "")),
+        open_questions=str(item.get("open_questions", "")),
+        drift_risks=str(item.get("drift_risks", "")),
+    )
+    item["status"] = "applied"
+    item["applied_at"] = now_iso()
+    item["turn_path"] = str(turn_path)
+    save_review_item(item_path, item)
+    return turn_no, turn_path, item_path
+
+def reject_review_item(root: Path, thread_id: str, item_id: str) -> Path:
+    item, item_path = load_review_item(root, thread_id, item_id)
+    if item.get("status") != "pending":
+        raise SystemExit(f"Review item is not pending: {item_path.name} status={item.get('status')}")
+    item["status"] = "rejected"
+    item["rejected_at"] = now_iso()
+    save_review_item(item_path, item)
+    return item_path
 
 def compact_one_range(
     tdir: Path,

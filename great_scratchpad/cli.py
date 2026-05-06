@@ -11,7 +11,7 @@ from .audit import audit_turn_md
 from .chat import append_trace_events, run_chat_turn
 from .constants import ROOT_DEFAULT
 from .llm import draft_annotation, print_annotation
-from .memory import add_turn, build_context_pack, compact_one_range, recent_turn_files, render_audit, render_recent_turns, retrieve
+from .memory import add_turn, apply_review_item, build_context_pack, compact_one_range, iter_review_items, recent_turn_files, reject_review_item, render_audit, render_recent_turns, retrieve
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
 
@@ -220,7 +220,7 @@ def cmd_annotate(args: argparse.Namespace) -> None:
     ensure_root(root)
     raw = read_text_arg(args.text, args.text_file)
     cfg = load_llm_config(root, args.llm_config, args.profile)
-    annotation = draft_annotation(raw, cfg)
+    annotation = draft_annotation(raw, cfg, json_repair_steps=args.json_repair_steps)
 
     if args.json:
         print(json.dumps(annotation, ensure_ascii=False, indent=2))
@@ -319,6 +319,8 @@ def cmd_chat(args: argparse.Namespace) -> None:
             max_tool_chars=args.max_tool_chars,
             verbose=not args.quiet,
             trace_events=trace_events if trace_path else None,
+            json_repair_steps=args.json_repair_steps,
+            queue_writes=args.queue_writes,
         )
         print(message)
         if trace_path:
@@ -362,6 +364,36 @@ def cmd_chat(args: argparse.Namespace) -> None:
             continue
 
         run_one(user_text)
+
+def cmd_review(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    ensure_root(root)
+
+    if args.review_cmd == "list":
+        items = iter_review_items(root, args.thread, status=args.status)
+        if not items:
+            print("(no review items)")
+            return
+        for path, item in items:
+            rel = path.relative_to(root)
+            text = str(item.get("text", "")).strip().replace("\n", " ")
+            print(
+                f"{rel}\tstatus={item.get('status')}\t"
+                f"thread={item.get('thread_id')}\t"
+                f"created={item.get('created_at')}\t"
+                f"text={limit_text(text, 140)}"
+            )
+        return
+
+    if args.review_cmd == "apply":
+        turn_no, turn_path, item_path = apply_review_item(root, args.thread, args.item)
+        print(f"Applied review item {item_path.name} as turn {turn_no:06d}: {turn_path}")
+        return
+
+    if args.review_cmd == "reject":
+        item_path = reject_review_item(root, args.thread, args.item)
+        print(f"Rejected review item: {item_path}")
+        return
 
 def _input_line(prompt: str) -> str:
     try:
@@ -766,6 +798,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--json", action="store_true", help="Print annotation JSON.")
     sp.add_argument("--save-thread", default=None, help="Save drafted annotation as a turn in THREAD.")
     sp.add_argument("--speaker", default="note", choices=["user", "assistant", "system", "tool", "note"])
+    sp.add_argument("--json-repair-steps", type=int, default=1, help="Retry invalid JSON outputs up to N times.")
     sp.set_defaults(func=cmd_annotate)
 
     sp = sub.add_parser("llm-config", help="Create or inspect LLM provider/local profiles.")
@@ -806,7 +839,27 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--yes", action="store_true", help="Allow runtime write actions without prompting.")
     sp.add_argument("--quiet", action="store_true", help="Do not print tool action progress.")
     sp.add_argument("--trace-out", default=None, help="Append chat runtime trace events as JSONL to PATH.")
+    sp.add_argument("--json-repair-steps", type=int, default=1, help="Retry invalid JSON runtime outputs up to N times.")
+    sp.add_argument("--queue-writes", action="store_true", help="Queue scratchpad.add_note writes for review instead of saving immediately.")
     sp.set_defaults(func=cmd_chat)
+
+    sp = sub.add_parser("review", help="Review queued scratchpad write requests.")
+    review_sub = sp.add_subparsers(dest="review_cmd", required=True)
+
+    sp2 = review_sub.add_parser("list", help="List queued write requests.")
+    sp2.add_argument("thread", nargs="?", default=None)
+    sp2.add_argument("--status", default="pending", help="Filter by status. Use empty string to show all.")
+    sp2.set_defaults(func=cmd_review)
+
+    sp2 = review_sub.add_parser("apply", help="Apply one queued write request as a note turn.")
+    sp2.add_argument("thread")
+    sp2.add_argument("item")
+    sp2.set_defaults(func=cmd_review)
+
+    sp2 = review_sub.add_parser("reject", help="Reject one queued write request.")
+    sp2.add_argument("thread")
+    sp2.add_argument("item")
+    sp2.set_defaults(func=cmd_review)
 
     sp = sub.add_parser("new", help="Create or open a thread.")
     sp.add_argument("thread")

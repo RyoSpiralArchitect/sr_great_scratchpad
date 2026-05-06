@@ -5,6 +5,7 @@ import os
 import shlex
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -12,6 +13,12 @@ from .constants import ANNOTATION_FIELDS, ANNOTATION_PROMPT_TEMPLATE
 
 def build_annotation_prompt(raw: str) -> str:
     return ANNOTATION_PROMPT_TEMPLATE.format(raw=raw.strip())
+
+def clip_text(text: str, max_chars: int = 4000) -> str:
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n...[truncated]"
 
 def extract_json_object(text: str) -> dict:
     text = text.strip()
@@ -52,7 +59,15 @@ def expand_command_part(part: str, values: dict[str, str]) -> str:
         out = out.replace("{" + key + "}", value)
     return out
 
-def call_openai_compatible(cfg: dict, prompt: str, system_prompt: str = "") -> str:
+def llm_config_metadata(cfg: dict) -> dict:
+    return {
+        "backend": str(cfg.get("backend", "")),
+        "profile": str(cfg.get("profile", "")),
+        "model": str(cfg.get("model", "")),
+        "model_path": str(cfg.get("model_path", "")),
+    }
+
+def call_openai_compatible_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
     api_key_env = cfg.get("api_key_env", "")
     api_key = os.environ.get(api_key_env, "") if api_key_env else cfg.get("api_key", "")
     if api_key_env and not api_key:
@@ -100,11 +115,22 @@ def call_openai_compatible(cfg: dict, prompt: str, system_prompt: str = "") -> s
         raise SystemExit(f"Provider API request failed: {exc}") from exc
 
     try:
-        return data["choices"][0]["message"]["content"]
+        content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise SystemExit(f"Provider API response did not look OpenAI-compatible: {data}") from exc
 
-def call_command_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:
+    return {
+        "content": content,
+        "usage": data.get("usage", {}),
+        "response_model": data.get("model", ""),
+        "request_model": body["model"],
+        "url": url,
+    }
+
+def call_openai_compatible(cfg: dict, prompt: str, system_prompt: str = "") -> str:
+    return str(call_openai_compatible_result(cfg, prompt, system_prompt).get("content", ""))
+
+def call_command_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
     command = cfg.get("command")
     if not command:
         raise SystemExit("command LLM config requires command.")
@@ -144,23 +170,88 @@ def call_command_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:
         stderr = proc.stderr.strip()
         raise SystemExit(f"Local LLM command failed with exit {proc.returncode}: {stderr}")
 
-    return proc.stdout.strip()
+    return {
+        "content": proc.stdout.strip(),
+        "usage": {},
+        "response_model": "",
+        "request_model": str(cfg.get("model_path", "")),
+        "command": parts,
+    }
 
-def call_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:
+def call_command_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:
+    return str(call_command_llm_result(cfg, prompt, system_prompt).get("content", ""))
+
+def call_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
+    started = time.perf_counter()
     backend = str(cfg.get("backend", "")).lower()
     if backend in {"openai-compatible", "openai_compatible", "provider"}:
-        return call_openai_compatible(cfg, prompt, system_prompt)
-    if backend in {"command", "local", "local-command"}:
-        return call_command_llm(cfg, prompt, system_prompt)
-    raise SystemExit(f"Unknown LLM backend: {cfg.get('backend')!r}")
+        result = call_openai_compatible_result(cfg, prompt, system_prompt)
+    elif backend in {"command", "local", "local-command"}:
+        result = call_command_llm_result(cfg, prompt, system_prompt)
+    else:
+        raise SystemExit(f"Unknown LLM backend: {cfg.get('backend')!r}")
 
-def draft_annotation(raw: str, cfg: dict) -> dict[str, str]:
+    result.setdefault("usage", {})
+    result.update(
+        {
+            "backend": str(cfg.get("backend", "")),
+            "profile": str(cfg.get("profile", "")),
+            "model": str(cfg.get("model", "") or result.get("request_model", "")),
+            "model_path": str(cfg.get("model_path", "")),
+            "prompt_chars": len(prompt),
+            "system_prompt_chars": len(system_prompt),
+            "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+        }
+    )
+    return result
+
+def call_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:
+    return str(call_llm_result(cfg, prompt, system_prompt).get("content", ""))
+
+def build_json_repair_prompt(original_prompt: str, bad_output: str, error: str, fields: list[str]) -> str:
+    field_lines = "\n".join(f"- {field}" for field in fields)
+    return f"""The previous model output was not valid JSON for this task.
+
+Return only one corrected JSON object. Do not include Markdown fences or commentary.
+
+Required fields:
+{field_lines}
+
+Parse error:
+{error}
+
+Previous output:
+---
+{clip_text(bad_output)}
+---
+
+Original task prompt:
+---
+{clip_text(original_prompt)}
+---
+"""
+
+def draft_annotation(raw: str, cfg: dict, json_repair_steps: int = 1) -> dict[str, str]:
     prompt = build_annotation_prompt(raw)
     output = call_llm(cfg, prompt, "Draft Great Scratchpad annotations as strict JSON only.")
     try:
         value = extract_json_object(output)
     except (ValueError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"Could not parse LLM annotation JSON: {exc}\nOutput:\n{output}") from exc
+        last_error = exc
+        for _attempt in range(max(0, json_repair_steps)):
+            repair_prompt = build_json_repair_prompt(prompt, output, str(last_error), ANNOTATION_FIELDS)
+            output = call_llm(
+                cfg,
+                repair_prompt,
+                "Repair the response into strict JSON only.",
+            )
+            try:
+                value = extract_json_object(output)
+                break
+            except (ValueError, json.JSONDecodeError) as repair_exc:
+                last_error = repair_exc
+        else:
+            raise SystemExit(f"Could not parse LLM annotation JSON: {last_error}\nOutput:\n{output}") from exc
     return normalize_annotation(value)
 
 def print_annotation(annotation: dict[str, str]) -> None:

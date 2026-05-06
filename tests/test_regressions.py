@@ -4,7 +4,9 @@ import argparse
 import json
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import sr_great_scratchpad as gs
@@ -83,6 +85,60 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
 
         output = gs.call_command_llm(cfg, "ignored")
         self.assertEqual(output, '{"type":"final","message":"ok"}')
+
+    def test_annotation_json_repair_recovers_invalid_output(self) -> None:
+        code = (
+            "import json,sys\n"
+            "p=sys.stdin.read()\n"
+            "if 'Previous output:' in p:\n"
+            " print(json.dumps({'center':'c','trajectory':'t','anchors':'a',"
+            "'assumptions':'s','open_questions':'q','drift_risks':'d'}))\n"
+            "else:\n"
+            " print('not json')\n"
+        )
+        cfg = {
+            "backend": "command",
+            "command": [sys.executable, "-S", "-c", code],
+            "timeout": 5,
+        }
+
+        annotation = gs.draft_annotation("raw", cfg, json_repair_steps=1)
+        self.assertEqual(annotation["center"], "c")
+
+    def test_chat_json_repair_recovers_invalid_runtime_output(self) -> None:
+        code = (
+            "import json,sys\n"
+            "p=sys.stdin.read()\n"
+            "if 'not valid JSON' in p:\n"
+            " print(json.dumps({'type':'final','message':'repaired final'}))\n"
+            "else:\n"
+            " print('not json')\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            cfg = {
+                "backend": "command",
+                "command": [sys.executable, "-S", "-c", code],
+                "timeout": 5,
+            }
+            events: list[dict] = []
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="repair please",
+                history=[],
+                verbose=False,
+                trace_events=events,
+                json_repair_steps=1,
+            )
+
+            self.assertEqual(message, "repaired final")
+            self.assertIn("json_parse_error", [event["event"] for event in events])
+            self.assertEqual(events[-1]["repair_attempts"], 1)
 
     def test_audit_short_raw_roomy_annotation_is_not_overgrown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -199,12 +255,112 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertGreaterEqual(event_names.count("model_output"), 3)
             self.assertGreaterEqual(event_names.count("tool_observation"), 2)
             self.assertEqual(event_names[-1], "final")
+            model_events = [event for event in events if event["event"] == "model_output"]
+            self.assertIn("prompt_chars", model_events[0]["llm"])
+            self.assertIn("duration_ms", model_events[0]["llm"])
 
             trace_path = root / "chat_trace.jsonl"
             gs.append_trace_events(trace_path, events)
             saved = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(len(saved), len(events))
             self.assertEqual(saved[-1]["event"], "final")
+
+    def test_provider_smoke_uses_openai_compatible_endpoint_and_usage(self) -> None:
+        requests: list[dict] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                requests.append({"path": self.path, "body": body})
+                content = json.dumps({"type": "final", "message": "provider final"})
+                payload = {
+                    "model": "fake-provider-model",
+                    "choices": [{"message": {"content": content}}],
+                    "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+                }
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *_args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                tdir = gs.ensure_thread_dirs(root, "t")
+                cfg = {
+                    "backend": "openai-compatible",
+                    "profile": "provider-test",
+                    "base_url": f"http://127.0.0.1:{server.server_port}/v1",
+                    "model": "fake-model",
+                    "timeout": 5,
+                }
+                events: list[dict] = []
+
+                message = gs.run_chat_turn(
+                    root=root,
+                    tdir=tdir,
+                    thread_id="t",
+                    cfg=cfg,
+                    user_text="provider please",
+                    history=[],
+                    verbose=False,
+                    trace_events=events,
+                )
+
+                self.assertEqual(message, "provider final")
+                self.assertEqual(requests[0]["path"], "/v1/chat/completions")
+                model_event = next(event for event in events if event["event"] == "model_output")
+                self.assertEqual(model_event["llm"]["profile"], "provider-test")
+                self.assertEqual(model_event["llm"]["usage"]["total_tokens"], 10)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_queue_writes_defers_add_note_until_review_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            gs.add_turn(root=root, thread_id="t", speaker="user", raw="hello")
+            cfg = {
+                "backend": "command",
+                "command": [
+                    sys.executable,
+                    "-S",
+                    str(Path("scripts/fake_chat_llm.py").resolve()),
+                ],
+                "timeout": 5,
+            }
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="queue write",
+                history=[],
+                yes=True,
+                verbose=False,
+                queue_writes=True,
+            )
+
+            self.assertIn("Fake chat final", message)
+            self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 1)
+            items = gs.iter_review_items(root, "t")
+            self.assertEqual(len(items), 1)
+            item_id = items[0][0].name
+            turn_no, turn_path, _item_path = gs.apply_review_item(root, "t", item_id)
+            self.assertEqual(turn_no, 2)
+            self.assertTrue(turn_path.exists())
+            self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 2)
 
 
 if __name__ == "__main__":
