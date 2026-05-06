@@ -394,6 +394,8 @@ It creates a temporary scratchpad, adds a bilingual trajectory-oriented turn, ru
 
 ### Design Direction
 
+See also: [`docs/design-principles.md`](docs/design-principles.md)
+
 - Keep Markdown as the primary surface. Premature YAML-only structure can become another form of semantic compression.
 - Keep deterministic retrieval underneath. grep/token/bigram search is cheap, auditable, and reproducible.
 - Let agentic retrieval live above that. The model should be encouraged to decide when the current thread is drifting and what needs to be retrieved.
