@@ -29,6 +29,16 @@ JP_PHRASE_RE = re.compile(
     re.UNICODE,
 )
 LLM_CONFIG_DEFAULT = "llm.json"
+TURN_SECTION_NAMES = [
+    "Raw articulation",
+    "Center pin",
+    "Trajectory",
+    "Anchors",
+    "Local assumptions",
+    "Open questions",
+    "Drift risks",
+    "Retrieval keys",
+]
 ANNOTATION_FIELDS = [
     "center",
     "trajectory",
@@ -423,11 +433,23 @@ Speaker: {speaker}
 
 
 def parse_section(md: str, section_name: str) -> str:
-    pattern = rf"^## {re.escape(section_name)}\s*\n(.*?)(?=^## |\Z)"
-    m = re.search(pattern, md, flags=re.MULTILINE | re.DOTALL)
+    pattern = rf"^## {re.escape(section_name)}[ \t]*\r?\n"
+    m = re.search(pattern, md, flags=re.MULTILINE)
     if not m:
         return ""
-    return m.group(1).strip()
+
+    known_sections = list(TURN_SECTION_NAMES)
+    if section_name not in known_sections:
+        known_sections.append(section_name)
+    next_sections = [s for s in known_sections if s != section_name]
+    next_pattern = "|".join(re.escape(s) for s in next_sections)
+    next_m = re.search(
+        rf"^## (?:{next_pattern})[ \t]*\r?\n",
+        md[m.end():],
+        flags=re.MULTILINE,
+    )
+    end = m.end() + next_m.start() if next_m else len(md)
+    return md[m.end():end].strip()
 
 
 def first_heading(md: str) -> str:
@@ -542,6 +564,13 @@ def compose_text_prompt(system_prompt: str, prompt: str) -> str:
     return f"System:\n{system_prompt.strip()}\n\nUser:\n{prompt.strip()}\n"
 
 
+def expand_command_part(part: str, values: dict[str, str]) -> str:
+    out = part
+    for key, value in values.items():
+        out = out.replace("{" + key + "}", value)
+    return out
+
+
 def call_openai_compatible(cfg: dict, prompt: str, system_prompt: str = "") -> str:
     api_key_env = cfg.get("api_key_env", "")
     api_key = os.environ.get(api_key_env, "") if api_key_env else cfg.get("api_key", "")
@@ -613,7 +642,7 @@ def call_command_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:
             "prompt": prompt,
             "prompt_file": prompt_file.name,
         }
-        parts = [part.format(**values) for part in raw_parts]
+        parts = [expand_command_part(part, values) for part in raw_parts]
         has_prompt_placeholder = any("{prompt}" in part or "{prompt_file}" in part for part in raw_parts)
         input_text = None if has_prompt_placeholder else prompt
 
@@ -1151,6 +1180,12 @@ def cmd_compact(args: argparse.Namespace) -> None:
     start = args.start or 1
     end = args.end or last
 
+    if args.block_size < 1:
+        raise SystemExit(f"Invalid block size: {args.block_size}. Use --block-size >= 1.")
+    if args.raw_excerpt_chars < 0:
+        raise SystemExit(
+            f"Invalid raw excerpt length: {args.raw_excerpt_chars}. Use --raw-excerpt-chars >= 0."
+        )
     if start < 1 or end > last or start > end:
         raise SystemExit(f"Invalid range: start={start}, end={end}, last_turn={last}")
 
@@ -1365,6 +1400,41 @@ def maybe_confirm_write(prompt: str, yes: bool) -> bool:
     return answer in {"y", "yes"}
 
 
+def action_int(
+    action_obj: dict,
+    field: str,
+    default: int,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> int:
+    raw = action_obj.get(field, default)
+    if isinstance(raw, bool):
+        raise ValueError(f"{field} must be an integer, got {raw!r}")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an integer, got {raw!r}") from exc
+
+    if min_value is not None and value < min_value:
+        raise ValueError(f"{field} must be >= {min_value}, got {value}")
+    if max_value is not None and value > max_value:
+        return max_value
+    return value
+
+
+def action_bool(action_obj: dict, field: str, default: bool = False) -> bool:
+    raw = action_obj.get(field, default)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    raise ValueError(f"{field} must be a boolean, got {raw!r}")
+
+
 def run_scratchpad_action(
     root: Path,
     tdir: Path,
@@ -1375,63 +1445,72 @@ def run_scratchpad_action(
 ) -> str:
     action = str(action_obj.get("action", "")).strip()
 
-    if action == "scratchpad.search":
-        query = str(action_obj.get("query", "")).strip()
-        if not query:
-            return "scratchpad.search failed: missing query"
-        top = int(action_obj.get("top", 5))
-        width = int(action_obj.get("width", 420))
-        return limit_text(render_search_results(tdir, query, top=top, width=width), max_tool_chars)
+    try:
+        if action == "scratchpad.search":
+            query = str(action_obj.get("query", "")).strip()
+            if not query:
+                return "scratchpad.search failed: missing query"
+            top = action_int(action_obj, "top", 5, min_value=1, max_value=50)
+            width = action_int(action_obj, "width", 420, min_value=80, max_value=4000)
+            return limit_text(render_search_results(tdir, query, top=top, width=width), max_tool_chars)
 
-    if action == "scratchpad.recent":
-        n = int(action_obj.get("n", 5))
-        max_chars = int(action_obj.get("max_chars", 1600))
-        return limit_text(render_recent_turns(tdir, n=n, max_chars=max_chars), max_tool_chars)
+        if action == "scratchpad.recent":
+            n = action_int(action_obj, "n", 5, min_value=0, max_value=50)
+            max_chars = action_int(action_obj, "max_chars", 1600, min_value=1, max_value=20000)
+            return limit_text(render_recent_turns(tdir, n=n, max_chars=max_chars), max_tool_chars)
 
-    if action == "scratchpad.pack":
-        query = str(action_obj.get("query", "")).strip()
-        if not query:
-            return "scratchpad.pack failed: missing query"
-        output = build_context_pack(
-            root=root,
-            tdir=tdir,
-            query=query,
-            recent_n=int(action_obj.get("recent", 6)),
-            top=int(action_obj.get("top", 6)),
-            max_chars_per_doc=int(action_obj.get("max_chars_per_doc", 2200)),
-            include_guide=bool(action_obj.get("include_guide", False)),
-        )
-        return limit_text(output, max_tool_chars)
+        if action == "scratchpad.pack":
+            query = str(action_obj.get("query", "")).strip()
+            if not query:
+                return "scratchpad.pack failed: missing query"
+            output = build_context_pack(
+                root=root,
+                tdir=tdir,
+                query=query,
+                recent_n=action_int(action_obj, "recent", 6, min_value=0, max_value=50),
+                top=action_int(action_obj, "top", 6, min_value=0, max_value=50),
+                max_chars_per_doc=action_int(
+                    action_obj,
+                    "max_chars_per_doc",
+                    2200,
+                    min_value=1,
+                    max_value=20000,
+                ),
+                include_guide=action_bool(action_obj, "include_guide", False),
+            )
+            return limit_text(output, max_tool_chars)
 
-    if action == "scratchpad.audit":
-        return limit_text(
-            render_audit(
-                tdir,
-                as_json=bool(action_obj.get("json", True)),
-                max_flags=int(action_obj.get("max_flags", 8)),
-            ),
-            max_tool_chars,
-        )
+        if action == "scratchpad.audit":
+            return limit_text(
+                render_audit(
+                    tdir,
+                    as_json=action_bool(action_obj, "json", True),
+                    max_flags=action_int(action_obj, "max_flags", 8, min_value=0, max_value=100),
+                ),
+                max_tool_chars,
+            )
 
-    if action == "scratchpad.add_note":
-        raw = str(action_obj.get("text", "")).strip()
-        if not raw:
-            return "scratchpad.add_note failed: missing text"
-        if not maybe_confirm_write("Allow scratchpad.add_note write?", yes):
-            return "scratchpad.add_note skipped: write was not confirmed"
-        turn_no, path = add_turn(
-            root=root,
-            thread_id=thread_id,
-            speaker="note",
-            raw=raw,
-            center=str(action_obj.get("center", "")),
-            trajectory=str(action_obj.get("trajectory", "")),
-            anchors=str(action_obj.get("anchors", "")),
-            assumptions=str(action_obj.get("assumptions", "")),
-            open_questions=str(action_obj.get("open_questions", "")),
-            drift_risks=str(action_obj.get("drift_risks", "")),
-        )
-        return f"scratchpad.add_note wrote turn {turn_no:06d}: {path.relative_to(tdir)}"
+        if action == "scratchpad.add_note":
+            raw = str(action_obj.get("text", "")).strip()
+            if not raw:
+                return "scratchpad.add_note failed: missing text"
+            if not maybe_confirm_write("Allow scratchpad.add_note write?", yes):
+                return "scratchpad.add_note skipped: write was not confirmed"
+            turn_no, path = add_turn(
+                root=root,
+                thread_id=thread_id,
+                speaker="note",
+                raw=raw,
+                center=str(action_obj.get("center", "")),
+                trajectory=str(action_obj.get("trajectory", "")),
+                anchors=str(action_obj.get("anchors", "")),
+                assumptions=str(action_obj.get("assumptions", "")),
+                open_questions=str(action_obj.get("open_questions", "")),
+                drift_risks=str(action_obj.get("drift_risks", "")),
+            )
+            return f"scratchpad.add_note wrote turn {turn_no:06d}: {path.relative_to(tdir)}"
+    except ValueError as exc:
+        return f"{action or 'scratchpad action'} failed: {exc}"
 
     return f"Unknown scratchpad action: {action!r}"
 
