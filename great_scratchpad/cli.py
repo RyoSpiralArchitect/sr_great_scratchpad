@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .audit import audit_turn_md
-from .chat import run_chat_turn
+from .chat import append_trace_events, run_chat_turn
 from .constants import ROOT_DEFAULT
 from .llm import draft_annotation, print_annotation
 from .memory import add_turn, build_context_pack, compact_one_range, recent_turn_files, render_audit, render_recent_turns, retrieve
@@ -302,8 +302,10 @@ def cmd_chat(args: argparse.Namespace) -> None:
     thread_id = safe_id(args.thread)
     cfg = load_llm_config(root, args.llm_config, args.profile)
     history: list[dict[str, str]] = []
+    trace_path = Path(args.trace_out).expanduser() if args.trace_out else None
 
     def run_one(user_text: str) -> None:
+        trace_events: list[dict] = []
         message = run_chat_turn(
             root=root,
             tdir=tdir,
@@ -316,8 +318,13 @@ def cmd_chat(args: argparse.Namespace) -> None:
             yes=args.yes,
             max_tool_chars=args.max_tool_chars,
             verbose=not args.quiet,
+            trace_events=trace_events if trace_path else None,
         )
         print(message)
+        if trace_path:
+            append_trace_events(trace_path, trace_events)
+            if not args.quiet:
+                print(f"[trace] {trace_path}")
         history.extend(
             [
                 {"role": "user", "content": user_text},
@@ -798,6 +805,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-tool-chars", type=int, default=6000, help="Maximum chars returned from each scratchpad action.")
     sp.add_argument("--yes", action="store_true", help="Allow runtime write actions without prompting.")
     sp.add_argument("--quiet", action="store_true", help="Do not print tool action progress.")
+    sp.add_argument("--trace-out", default=None, help="Append chat runtime trace events as JSONL to PATH.")
     sp.set_defaults(func=cmd_chat)
 
     sp = sub.add_parser("new", help="Create or open a thread.")

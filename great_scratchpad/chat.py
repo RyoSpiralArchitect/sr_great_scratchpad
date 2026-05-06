@@ -7,6 +7,7 @@ from pathlib import Path
 from .constants import CHAT_PROMPT_TEMPLATE, CHAT_RUNTIME_SYSTEM
 from .llm import call_llm, extract_json_object
 from .memory import add_turn, build_context_pack, render_audit, render_recent_turns, render_search_results
+from .storage import now_iso
 from .text import limit_text
 
 def parse_chat_json(text: str) -> dict:
@@ -78,6 +79,19 @@ def action_bool(action_obj: dict, field: str, default: bool = False) -> bool:
         if normalized in {"0", "false", "no", "n", "off"}:
             return False
     raise ValueError(f"{field} must be a boolean, got {raw!r}")
+
+def record_trace(trace_events: list[dict] | None, event: str, **fields: object) -> None:
+    if trace_events is None:
+        return
+    trace_events.append({"time": now_iso(), "event": event, **fields})
+
+def append_trace_events(path: Path, events: list[dict]) -> None:
+    if not events:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        for event in events:
+            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
 
 def run_scratchpad_action(
     root: Path,
@@ -170,9 +184,18 @@ def run_chat_turn(
     yes: bool = False,
     max_tool_chars: int = 6000,
     verbose: bool = True,
+    trace_events: list[dict] | None = None,
 ) -> str:
     observations: list[str] = []
     recent_context = render_recent_turns(tdir, n=recent_n, max_chars=1200)
+    record_trace(
+        trace_events,
+        "turn_start",
+        thread_id=thread_id,
+        user_text=user_text,
+        recent_n=recent_n,
+        max_steps=max_steps,
+    )
 
     for step in range(max_steps + 1):
         prompt = build_chat_prompt(
@@ -185,18 +208,24 @@ def run_chat_turn(
         raw_output = call_llm(cfg, prompt, CHAT_RUNTIME_SYSTEM)
         obj = parse_chat_json(raw_output)
         kind = str(obj.get("type", "")).strip().lower()
+        record_trace(trace_events, "model_output", step=step, kind=kind, payload=obj)
 
         if kind == "final" or "message" in obj:
             message = str(obj.get("message", "")).strip()
             if not message:
                 message = "(empty final message)"
+            record_trace(trace_events, "final", step=step, message=message)
             return message
 
         if kind != "action" and "action" not in obj:
-            return f"(chat runtime stopped: expected action/final JSON, got {obj})"
+            message = f"(chat runtime stopped: expected action/final JSON, got {obj})"
+            record_trace(trace_events, "stopped", step=step, reason="unexpected_payload", message=message)
+            return message
 
         if step >= max_steps:
-            return "(chat runtime stopped: max tool steps reached before final answer)"
+            message = "(chat runtime stopped: max tool steps reached before final answer)"
+            record_trace(trace_events, "stopped", step=step, reason="max_steps", message=message)
+            return message
 
         action_name = str(obj.get("action", "")).strip()
         if verbose:
@@ -209,10 +238,19 @@ def run_chat_turn(
             yes=yes,
             max_tool_chars=max_tool_chars,
         )
+        record_trace(
+            trace_events,
+            "tool_observation",
+            step=step,
+            action=action_name,
+            observation=observation,
+        )
         observations.append(
             f"Action {len(observations) + 1}: {action_name}\nObservation:\n{observation}"
         )
         if verbose:
             print(limit_text(observation, 800))
 
-    return "(chat runtime stopped unexpectedly)"
+    message = "(chat runtime stopped unexpectedly)"
+    record_trace(trace_events, "stopped", reason="unexpected_loop_exit", message=message)
+    return message

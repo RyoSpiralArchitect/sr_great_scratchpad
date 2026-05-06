@@ -91,7 +91,9 @@ python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" llm-config
 python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" chat monday-meawness \
   --profile fake-chat \
   --text "前のSemantic CompressionとTopic Driftの話を踏まえて、runtimeの位置づけを短く見たい。" \
-  --yes
+  --yes \
+  --trace-out "${tmp_root}/chat_trace.jsonl"
+wc -l "${tmp_root}/chat_trace.jsonl"
 
 echo
 echo "Live run complete. Inspect artifacts under: ${tmp_root}"

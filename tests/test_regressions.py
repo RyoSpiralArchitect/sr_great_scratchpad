@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tempfile
 import unittest
@@ -156,6 +157,54 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertIn("### recent: turns/000001-user.md", pack)
             self.assertIn("- Center: semantic compression", pack)
             self.assertIn("- Trajectory: The thread moves toward retrieval-backed continuity.", pack)
+
+    def test_chat_runtime_records_trace_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            gs.add_turn(
+                root=root,
+                thread_id="t",
+                speaker="user",
+                raw="Semantic Compression can cause Topic Drift.",
+                center="semantic compression",
+                anchors="Semantic Compression, Topic Drift",
+            )
+            cfg = {
+                "backend": "command",
+                "command": [
+                    sys.executable,
+                    "-S",
+                    str(Path("scripts/fake_chat_llm.py").resolve()),
+                ],
+                "timeout": 5,
+            }
+            events: list[dict] = []
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="Use memory.",
+                history=[],
+                yes=True,
+                verbose=False,
+                trace_events=events,
+            )
+
+            self.assertIn("Fake chat final", message)
+            event_names = [event["event"] for event in events]
+            self.assertIn("turn_start", event_names)
+            self.assertGreaterEqual(event_names.count("model_output"), 3)
+            self.assertGreaterEqual(event_names.count("tool_observation"), 2)
+            self.assertEqual(event_names[-1], "final")
+
+            trace_path = root / "chat_trace.jsonl"
+            gs.append_trace_events(trace_path, events)
+            saved = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(saved), len(events))
+            self.assertEqual(saved[-1]["event"], "final")
 
 
 if __name__ == "__main__":
