@@ -127,6 +127,36 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertEqual(result["status"], "too_compressed")
             self.assertGreaterEqual(len(result["missing_fields"]), 4)
 
+    def test_context_pack_includes_trajectory_source_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            gs.add_turn(
+                root=root,
+                thread_id="t",
+                speaker="user",
+                raw="Semantic Compression can cause Topic Drift.",
+                center="semantic compression",
+                trajectory="The thread moves toward retrieval-backed continuity.",
+                anchors="Semantic Compression, Topic Drift",
+                open_questions="how retrieval should choose sources",
+                drift_risks="losing the path while keeping the answer",
+            )
+
+            pack = gs.build_context_pack(
+                root=root,
+                tdir=tdir,
+                query="Topic Drift",
+                recent_n=1,
+                top=1,
+                max_chars_per_doc=1200,
+            )
+
+            self.assertIn("## Source trajectory index", pack)
+            self.assertIn("### recent: turns/000001-user.md", pack)
+            self.assertIn("- Center: semantic compression", pack)
+            self.assertIn("- Trajectory: The thread moves toward retrieval-backed continuity.", pack)
+
 
 if __name__ == "__main__":
     unittest.main()

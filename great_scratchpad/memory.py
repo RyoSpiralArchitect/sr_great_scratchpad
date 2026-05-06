@@ -156,6 +156,35 @@ def compact_one_range(
     block_path.write_text("\n".join(out).strip() + "\n", encoding="utf-8")
     return block_path
 
+def inline_field(value: str, fallback: str = "(none)", max_chars: int = 220) -> str:
+    value = value.strip() or fallback
+    value = limit_text(value, max_chars)
+    return " / ".join(line.strip() for line in value.splitlines() if line.strip())
+
+def source_index_lines(
+    tdir: Path,
+    sources: list[tuple[str, Path, str, float | None]],
+) -> list[str]:
+    if not sources:
+        return ["(no sources selected)", ""]
+
+    lines: list[str] = []
+    for kind, path, text, score in sources:
+        score_label = f", score={score:.1f}" if score is not None else ""
+        lines.extend(
+            [
+                f"### {kind}: {path.relative_to(tdir)}{score_label}",
+                "",
+                f"- Center: {inline_field(parse_section(text, 'Center pin'), '(not specified)')}",
+                f"- Trajectory: {inline_field(parse_section(text, 'Trajectory'), '(not specified)')}",
+                f"- Anchors: {inline_field(parse_section(text, 'Anchors'))}",
+                f"- Open questions: {inline_field(parse_section(text, 'Open questions'))}",
+                f"- Drift risks: {inline_field(parse_section(text, 'Drift risks'))}",
+                "",
+            ]
+        )
+    return lines
+
 def build_context_pack(
     root: Path,
     tdir: Path,
@@ -168,6 +197,19 @@ def build_context_pack(
     recent = recent_turn_files(tdir, recent_n)
     hits = retrieve(tdir, query, top)
     included: set[Path] = set()
+    sources: list[tuple[str, Path, str, float | None]] = []
+
+    for path in recent:
+        text = path.read_text(encoding="utf-8")
+        included.add(path)
+        sources.append(("recent", path, text, None))
+
+    for score, path, text in hits:
+        if path in included:
+            continue
+        included.add(path)
+        sources.append(("retrieved", path, text, score))
+
     lines = [
         "# Great Scratchpad Context Pack",
         "",
@@ -193,28 +235,36 @@ def build_context_pack(
 
     lines.extend(
         [
+            "## Source trajectory index",
+            "",
+            *source_index_lines(tdir, sources),
+        ]
+    )
+
+    lines.extend(
+        [
             "## Recent turn window",
             "",
         ]
     )
 
-    for path in recent:
-        included.add(path)
+    for kind, path, text, _score in sources:
+        if kind != "recent":
+            continue
         lines.extend(
             [
                 f"### {path.relative_to(tdir)}",
                 "",
-                limit_text(path.read_text(encoding="utf-8"), max_chars_per_doc),
+                limit_text(text, max_chars_per_doc),
                 "",
             ]
         )
 
     lines.extend(["## Retrieved trajectory anchors", ""])
 
-    for score, path, text in hits:
-        if path in included:
+    for kind, path, text, score in sources:
+        if kind != "retrieved" or score is None:
             continue
-        included.add(path)
         lines.extend(
             [
                 f"### score={score:.1f} — {path.relative_to(tdir)}",
