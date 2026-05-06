@@ -5,6 +5,16 @@ from pathlib import Path
 
 from .text import parse_section, tokenize
 
+ANNOTATION_SECTION_NAMES = [
+    "Center pin",
+    "Trajectory",
+    "Anchors",
+    "Local assumptions",
+    "Open questions",
+    "Drift risks",
+]
+PLACEHOLDER_VALUES = {"", "(none)", "(not specified)"}
+
 def contains_cjk(s: str) -> bool:
     return bool(re.search(r"[ぁ-んァ-ヶー一-龥々〆〤]", s))
 
@@ -51,47 +61,69 @@ def anchor_supported_by_raw(anchor: str, raw: str) -> bool:
         return overlap >= 0.66
     return overlap >= 0.50
 
-def annotation_text_from_md(md: str) -> str:
-    sections = [
-        "Center pin",
-        "Trajectory",
-        "Anchors",
-        "Local assumptions",
-        "Open questions",
-        "Drift risks",
+def is_placeholder(value: str) -> bool:
+    return value.strip().lower() in PLACEHOLDER_VALUES
+
+def annotation_sections_from_md(md: str) -> dict[str, str]:
+    return {name: parse_section(md, name) for name in ANNOTATION_SECTION_NAMES}
+
+def annotation_text_from_sections(sections: dict[str, str]) -> str:
+    meaningful = [
+        value.strip()
+        for value in sections.values()
+        if not is_placeholder(value)
     ]
-    return "\n".join(parse_section(md, s) for s in sections).strip()
+    return "\n".join(meaningful).strip()
+
+def annotation_text_from_md(md: str) -> str:
+    return annotation_text_from_sections(annotation_sections_from_md(md))
+
+def classify_ratio(raw_chars: int, ratio: float) -> str:
+    if raw_chars == 0:
+        return "missing_raw"
+    if ratio < 0.20:
+        return "too_compressed"
+    if ratio < 0.50:
+        return "compressed_watch"
+    if ratio <= 1.20:
+        return "ok"
+
+    roomy_limit = 1.50
+    if raw_chars < 180:
+        roomy_limit = 3.00
+    elif raw_chars < 400:
+        roomy_limit = 2.00
+
+    if ratio <= roomy_limit:
+        return "roomy"
+    return "overgrown_watch"
 
 def audit_turn_md(path: Path) -> dict:
     md = path.read_text(encoding="utf-8")
     raw = parse_section(md, "Raw articulation")
-    annotation = annotation_text_from_md(md)
+    sections = annotation_sections_from_md(md)
+    annotation = annotation_text_from_sections(sections)
     anchors = parse_section(md, "Anchors")
 
     raw_chars = len(raw.strip())
     annotation_chars = len(annotation.strip())
     ratio = annotation_chars / raw_chars if raw_chars else 0.0
 
-    if raw_chars == 0:
-        status = "missing_raw"
-    elif ratio < 0.20:
-        status = "too_compressed"
-    elif ratio < 0.50:
-        status = "compressed_watch"
-    elif ratio <= 1.20:
-        status = "ok"
-    elif ratio <= 1.50:
-        status = "roomy"
-    else:
-        status = "overgrown_watch"
-
+    status = classify_ratio(raw_chars, ratio)
+    missing_fields = [
+        name for name, value in sections.items()
+        if is_placeholder(value)
+    ]
+    anchors_list = split_anchor_items(anchors)
     unsupported_anchors = [
-        a for a in split_anchor_items(anchors)
+        a for a in anchors_list
         if not anchor_supported_by_raw(a, raw)
     ]
 
-    if unsupported_anchors and status == "ok":
+    if unsupported_anchors and status in {"ok", "roomy"}:
         status = "check_anchors"
+    if len(missing_fields) >= 4 and status in {"ok", "roomy"}:
+        status = "thin_annotation"
 
     return {
         "path": str(path),
@@ -99,5 +131,7 @@ def audit_turn_md(path: Path) -> dict:
         "annotation_chars": annotation_chars,
         "ratio": round(ratio, 3),
         "status": status,
+        "missing_fields": missing_fields,
+        "anchor_count": len(anchors_list),
         "unsupported_anchors": unsupported_anchors,
     }

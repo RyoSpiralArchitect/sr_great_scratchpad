@@ -151,6 +151,11 @@ def cmd_audit(args: argparse.Namespace) -> None:
             f"  status: {r['status']}"
         )
         flags = r["unsupported_anchors"]
+        missing = r.get("missing_fields", [])
+        if missing:
+            print(f"  missing_fields: {', '.join(missing)}")
+        if "anchor_count" in r:
+            print(f"  anchor_count: {r['anchor_count']}")
         if flags:
             shown = flags[:args.max_flags]
             print(f"  unsupported_anchors: {', '.join(shown)}")

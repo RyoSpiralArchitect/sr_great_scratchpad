@@ -83,6 +83,50 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
         output = gs.call_command_llm(cfg, "ignored")
         self.assertEqual(output, '{"type":"final","message":"ok"}')
 
+    def test_audit_short_raw_roomy_annotation_is_not_overgrown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gs.ensure_thread_dirs(root, "t")
+            _, path = gs.add_turn(
+                root=root,
+                thread_id="t",
+                speaker="user",
+                raw=(
+                    "Semantic Compression preserves conclusions but destroys "
+                    "Trajectory. Topic Drift starts when the center pin moves."
+                ),
+                center="semantic compression and trajectory loss",
+                trajectory=(
+                    "The turn moves from useful summarization toward practical "
+                    "Topic Drift risk and retrieval timing."
+                ),
+                anchors="Semantic Compression, Trajectory, Topic Drift, center pin",
+                assumptions="Markdown raw files preserve more articulation than terse YAML",
+                open_questions="when retrieval should become agentic",
+                drift_risks="saving only conclusions and losing the path",
+            )
+
+            result = gs.audit_turn_md(path)
+            self.assertEqual(result["status"], "roomy")
+            self.assertEqual(result["missing_fields"], [])
+            self.assertEqual(result["anchor_count"], 4)
+
+    def test_audit_ignores_placeholder_annotation_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gs.ensure_thread_dirs(root, "t")
+            _, path = gs.add_turn(
+                root=root,
+                thread_id="t",
+                speaker="user",
+                raw="A raw turn without annotation should audit as compressed.",
+            )
+
+            result = gs.audit_turn_md(path)
+            self.assertEqual(result["annotation_chars"], 0)
+            self.assertEqual(result["status"], "too_compressed")
+            self.assertGreaterEqual(len(result["missing_fields"]), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

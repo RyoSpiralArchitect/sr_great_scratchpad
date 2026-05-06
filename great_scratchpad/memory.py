@@ -280,6 +280,11 @@ def render_audit(tdir: Path, as_json: bool = True, max_flags: int = 8) -> str:
             ]
         )
         flags = r["unsupported_anchors"]
+        missing = r.get("missing_fields", [])
+        if missing:
+            out.append(f"  missing_fields: {', '.join(missing)}")
+        if "anchor_count" in r:
+            out.append(f"  anchor_count: {r['anchor_count']}")
         if flags:
             shown = flags[:max_flags]
             out.append(f"  unsupported_anchors: {', '.join(shown)}")
