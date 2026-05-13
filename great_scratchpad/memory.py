@@ -118,6 +118,38 @@ def save_review_item(path: Path, item: dict) -> None:
     item["updated_at"] = now_iso()
     path.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
 
+def edit_review_item(root: Path, thread_id: str, item_id: str, updates: dict[str, str]) -> tuple[dict, Path]:
+    item, item_path = load_review_item(root, thread_id, item_id)
+    if item.get("status") != "pending":
+        raise SystemExit(f"Review item is not pending: {item_path.name} status={item.get('status')}")
+    allowed = {
+        "text",
+        "center",
+        "trajectory",
+        "anchors",
+        "assumptions",
+        "open_questions",
+        "drift_risks",
+    }
+    changed = False
+    for key, value in updates.items():
+        if key not in allowed:
+            raise SystemExit(f"Review item field is not editable: {key}")
+        if value is None:
+            continue
+        item[key] = str(value)
+        changed = True
+    if not changed:
+        raise SystemExit("No review item fields were provided to edit.")
+    item.setdefault("edit_history", []).append(
+        {
+            "edited_at": now_iso(),
+            "fields": sorted(key for key, value in updates.items() if value is not None),
+        }
+    )
+    save_review_item(item_path, item)
+    return item, item_path
+
 def iter_review_items(root: Path, thread_id: str | None = None, status: str = "pending") -> list[tuple[Path, dict]]:
     base = root / "review_queue"
     if not base.exists():

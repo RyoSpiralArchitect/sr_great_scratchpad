@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -85,6 +87,23 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
 
         output = gs.call_command_llm(cfg, "ignored")
         self.assertEqual(output, '{"type":"final","message":"ok"}')
+
+    def test_local_command_usage_is_estimated(self) -> None:
+        cfg = {
+            "backend": "command",
+            "command": [
+                sys.executable,
+                "-S",
+                "-c",
+                "import json; print(json.dumps({'type':'final','message':'ok'}))",
+            ],
+            "timeout": 5,
+        }
+
+        result = gs.call_llm_result(cfg, "hello local model", "Return JSON.")
+        self.assertEqual(result["usage"]["estimated"], True)
+        self.assertGreater(result["usage"]["prompt_tokens"], 0)
+        self.assertGreater(result["usage"]["completion_tokens"], 0)
 
     def test_annotation_json_repair_recovers_invalid_output(self) -> None:
         code = (
@@ -301,6 +320,10 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
                     "profile": "provider-test",
                     "base_url": f"http://127.0.0.1:{server.server_port}/v1",
                     "model": "fake-model",
+                    "top_p": 0.7,
+                    "seed": 42,
+                    "stop": ["STOP"],
+                    "json_mode": "json_object",
                     "timeout": 5,
                 }
                 events: list[dict] = []
@@ -318,12 +341,143 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
 
                 self.assertEqual(message, "provider final")
                 self.assertEqual(requests[0]["path"], "/v1/chat/completions")
+                self.assertEqual(requests[0]["body"]["top_p"], 0.7)
+                self.assertEqual(requests[0]["body"]["seed"], 42)
+                self.assertEqual(requests[0]["body"]["stop"], ["STOP"])
+                self.assertEqual(requests[0]["body"]["response_format"], {"type": "json_object"})
                 model_event = next(event for event in events if event["event"] == "model_output")
                 self.assertEqual(model_event["llm"]["profile"], "provider-test")
                 self.assertEqual(model_event["llm"]["usage"]["total_tokens"], 10)
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_smoke_cli_writes_trace_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parser = gs.build_parser()
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "llm-config",
+                    "local",
+                    "--profile",
+                    "smoke-local",
+                    "--command",
+                    (
+                        f"{sys.executable} -S -c "
+                        "\"import json; print(json.dumps({'ok': True, 'message': 'passed'}))\""
+                    ),
+                    "--default",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                args.func(args)
+
+            trace_path = root / "nested" / "traces" / "smoke.jsonl"
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "smoke",
+                    "--profile",
+                    "smoke-local",
+                    "--trace-out",
+                    str(trace_path),
+                    "--run-id",
+                    "test-smoke-run",
+                    "--json",
+                ]
+            )
+            out = io.StringIO()
+            with redirect_stdout(out):
+                args.func(args)
+
+            report = json.loads(out.getvalue())
+            self.assertEqual(report["ok"], True)
+            self.assertTrue(trace_path.exists())
+            manifest_path = root / "nested" / "traces" / "smoke.manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["run_id"], "test-smoke-run")
+            saved = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+            self.assertTrue(all(event["run_id"] == "test-smoke-run" for event in saved))
+
+    def test_chat_cli_writes_run_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parser = gs.build_parser()
+            gs.ensure_thread_dirs(root, "t")
+            gs.add_turn(root=root, thread_id="t", speaker="user", raw="Semantic Compression causes Topic Drift.")
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "llm-config",
+                    "local",
+                    "--profile",
+                    "fake-chat",
+                    "--command",
+                    f"{sys.executable} -S {Path('scripts/fake_chat_llm.py').resolve()}",
+                    "--default",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                args.func(args)
+
+            trace_path = root / "runs" / "chat.jsonl"
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "chat",
+                    "t",
+                    "--profile",
+                    "fake-chat",
+                    "--text",
+                    "Use memory.",
+                    "--queue-writes",
+                    "--yes",
+                    "--quiet",
+                    "--trace-out",
+                    str(trace_path),
+                    "--run-id",
+                    "chat-run",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                args.func(args)
+
+            manifest = json.loads((root / "runs" / "chat.manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["run_id"], "chat-run")
+            self.assertEqual(manifest["command"], "chat")
+            self.assertEqual(manifest["summary"]["event_counts"]["final"], 1)
+
+    def test_hf_config_is_optional_profile_scaffold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parser = gs.build_parser()
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "llm-config",
+                    "hf",
+                    "--profile",
+                    "hf-local",
+                    "--model",
+                    "local/model",
+                    "--device",
+                    "cpu",
+                    "--capture-hidden",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                args.func(args)
+            cfg = gs.load_llm_config(root, None, "hf-local")
+            self.assertEqual(cfg["backend"], "huggingface")
+            self.assertEqual(cfg["model"], "local/model")
+            self.assertEqual(cfg["capture_hidden"], True)
 
     def test_queue_writes_defers_add_note_until_review_apply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -357,9 +511,20 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             items = gs.iter_review_items(root, "t")
             self.assertEqual(len(items), 1)
             item_id = items[0][0].name
+            edited, _edited_path = gs.edit_review_item(
+                root,
+                "t",
+                item_id,
+                {
+                    "text": "edited queued note",
+                    "center": "edited center",
+                },
+            )
+            self.assertEqual(edited["text"], "edited queued note")
             turn_no, turn_path, _item_path = gs.apply_review_item(root, "t", item_id)
             self.assertEqual(turn_no, 2)
             self.assertTrue(turn_path.exists())
+            self.assertIn("edited queued note", turn_path.read_text(encoding="utf-8"))
             self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 2)
 
 

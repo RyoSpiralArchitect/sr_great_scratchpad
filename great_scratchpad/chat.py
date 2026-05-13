@@ -105,6 +105,7 @@ def llm_trace(result: dict) -> dict:
         "system_prompt_chars": result.get("system_prompt_chars", 0),
         "duration_ms": result.get("duration_ms", 0),
         "usage": result.get("usage", {}),
+        "hidden": result.get("hidden", {}),
     }
 
 def run_scratchpad_action(

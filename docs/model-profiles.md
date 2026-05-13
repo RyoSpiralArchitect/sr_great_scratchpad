@@ -22,7 +22,11 @@ python3 -S sr_great_scratchpad.py llm-config provider \
   --api-key-env PROVIDER_API_KEY \
   --model "MODEL_NAME" \
   --temperature 0.1 \
+  --top-p 0.9 \
   --max-tokens 900 \
+  --seed 42 \
+  --stop "<END_JSON>" \
+  --json-mode json_object \
   --default
 ```
 
@@ -104,6 +108,9 @@ python3 -S sr_great_scratchpad.py llm-config provider \
 
 Command profiles pass the composed prompt through stdin unless the command
 contains `{prompt}` or `{prompt_file}`.
+Because command-line models usually do not return provider usage, Great
+Scratchpad records a dependency-free token usage estimate in traces and smoke
+reports.
 
 ### llama.cpp `llama-cli`
 
@@ -136,7 +143,41 @@ python3 -S sr_great_scratchpad.py llm-config local \
   --timeout 180
 ```
 
+## Hugging Face transformers profile
+
+The Hugging Face backend is optional and only loads `transformers` / `torch`
+when the profile is actually used. It is meant for local experiments where you
+may later want to inspect generated hidden-state metadata.
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config hf \
+  --profile hf-local \
+  --model "/path/to/hf/model-or-repo" \
+  --device mps \
+  --dtype float16 \
+  --temperature 0.1 \
+  --top-p 0.9 \
+  --max-new-tokens 900 \
+  --capture-hidden \
+  --default
+```
+
+If `--capture-hidden` is set, traces include shape metadata for generated
+hidden states when the model/backend supports it. Tensor dumps are intentionally
+not written by default.
+
 ## Experiment commands
+
+Profile smoke:
+
+```bash
+python3 -S sr_great_scratchpad.py smoke \
+  --profile ollama-qwen \
+  --trace-out traces/ollama-qwen-smoke.jsonl
+```
+
+The smoke command verifies that a profile can return one parseable JSON object.
+It also writes `traces/ollama-qwen-smoke.manifest.json` by default.
 
 ```bash
 python3 -S sr_great_scratchpad.py annotate \
@@ -149,14 +190,22 @@ python3 -S sr_great_scratchpad.py chat monday-meawness \
   --profile ollama-qwen \
   --text "Use the earlier Topic Drift context." \
   --trace-out traces/ollama-qwen.jsonl \
+  --run-id ollama-qwen-topic-drift-001 \
   --json-repair-steps 2 \
   --queue-writes
 ```
+
+`chat` creates trace parent directories automatically and writes a sibling
+manifest by default, for example `traces/ollama-qwen.manifest.json`. The
+manifest captures the run id, profile metadata, event counts, and usage totals.
 
 Review queued memory writes:
 
 ```bash
 python3 -S sr_great_scratchpad.py review list monday-meawness
+python3 -S sr_great_scratchpad.py review edit monday-meawness ITEM_ID.json \
+  --text "Edited note text before applying." \
+  --center "reviewed memory write"
 python3 -S sr_great_scratchpad.py review apply monday-meawness ITEM_ID.json
 python3 -S sr_great_scratchpad.py review reject monday-meawness ITEM_ID.json
 ```

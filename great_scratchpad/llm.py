@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import random
+import re
 import shlex
 import subprocess
 import tempfile
@@ -53,6 +56,30 @@ def compose_text_prompt(system_prompt: str, prompt: str) -> str:
         return prompt
     return f"System:\n{system_prompt.strip()}\n\nUser:\n{prompt.strip()}\n"
 
+def estimate_token_count(text: str) -> int:
+    text = text or ""
+    if not text.strip():
+        return 0
+    cjk_chars = len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", text))
+    latin_words = len(re.findall(r"[A-Za-z0-9_]+(?:[-'][A-Za-z0-9_]+)?", text))
+    other_nonspace = len(re.findall(r"[^\sA-Za-z0-9_\u3040-\u30ff\u3400-\u9fff]", text))
+    # A deliberately conservative, dependency-free estimate. It is not a
+    # tokenizer replacement, but it keeps local-command traces comparable.
+    rough_chars = math.ceil(len(text) / 4)
+    rough_pieces = cjk_chars + latin_words + math.ceil(other_nonspace / 2)
+    return max(1, max(rough_chars, rough_pieces))
+
+def estimated_usage(prompt: str, completion: str) -> dict:
+    prompt_tokens = estimate_token_count(prompt)
+    completion_tokens = estimate_token_count(completion)
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "estimated": True,
+        "estimator": "great_scratchpad_chars_words_v1",
+    }
+
 def expand_command_part(part: str, values: dict[str, str]) -> str:
     out = part
     for key, value in values.items():
@@ -91,6 +118,22 @@ def call_openai_compatible_result(cfg: dict, prompt: str, system_prompt: str = "
         "temperature": float(cfg.get("temperature", 0.2)),
         "max_tokens": int(cfg.get("max_tokens", 900)),
     }
+    if cfg.get("top_p") not in {None, ""}:
+        body["top_p"] = float(cfg.get("top_p"))
+    if cfg.get("seed") not in {None, ""}:
+        body["seed"] = int(cfg.get("seed"))
+    stop = cfg.get("stop")
+    if isinstance(stop, list) and stop:
+        body["stop"] = [str(item) for item in stop]
+    elif isinstance(stop, str) and stop:
+        body["stop"] = stop
+    response_format = cfg.get("response_format")
+    if isinstance(response_format, dict):
+        body["response_format"] = response_format
+    else:
+        json_mode = cfg.get("json_mode", "")
+        if json_mode is True or str(json_mode).strip().lower() in {"json", "json_object", "true", "1"}:
+            body["response_format"] = {"type": "json_object"}
     if not body["model"]:
         raise SystemExit("openai-compatible LLM config requires model.")
 
@@ -119,9 +162,13 @@ def call_openai_compatible_result(cfg: dict, prompt: str, system_prompt: str = "
     except (KeyError, IndexError, TypeError) as exc:
         raise SystemExit(f"Provider API response did not look OpenAI-compatible: {data}") from exc
 
+    usage = data.get("usage", {})
+    if not usage:
+        usage = estimated_usage(compose_text_prompt(system_prompt, prompt), str(content))
+
     return {
         "content": content,
-        "usage": data.get("usage", {}),
+        "usage": usage,
         "response_model": data.get("model", ""),
         "request_model": body["model"],
         "url": url,
@@ -170,9 +217,10 @@ def call_command_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> 
         stderr = proc.stderr.strip()
         raise SystemExit(f"Local LLM command failed with exit {proc.returncode}: {stderr}")
 
+    content = proc.stdout.strip()
     return {
-        "content": proc.stdout.strip(),
-        "usage": {},
+        "content": content,
+        "usage": estimated_usage(prompt, content),
         "response_model": "",
         "request_model": str(cfg.get("model_path", "")),
         "command": parts,
@@ -181,6 +229,107 @@ def call_command_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> 
 def call_command_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:
     return str(call_command_llm_result(cfg, prompt, system_prompt).get("content", ""))
 
+def call_huggingface_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as exc:
+        raise SystemExit(
+            "Hugging Face backend requires optional dependencies: transformers and torch."
+        ) from exc
+
+    model_ref = str(cfg.get("model_path") or cfg.get("model") or "").strip()
+    if not model_ref:
+        raise SystemExit("huggingface LLM config requires model or model_path.")
+
+    seed = cfg.get("seed")
+    if seed not in {None, ""}:
+        seed_value = int(seed)
+        random.seed(seed_value)
+        torch.manual_seed(seed_value)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_ref)
+
+    model_kwargs = {}
+    dtype = str(cfg.get("dtype", "")).strip()
+    if dtype:
+        if not hasattr(torch, dtype):
+            raise SystemExit(f"Unknown torch dtype for Hugging Face backend: {dtype}")
+        model_kwargs["torch_dtype"] = getattr(torch, dtype)
+    model = AutoModelForCausalLM.from_pretrained(model_ref, **model_kwargs)
+
+    device = str(cfg.get("device", "auto")).strip()
+    if device and device != "auto":
+        model.to(device)
+
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt or cfg.get("system_prompt", "Return the requested response."),
+        },
+        {"role": "user", "content": prompt},
+    ]
+    if getattr(tokenizer, "chat_template", None):
+        text_prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    else:
+        text_prompt = compose_text_prompt(system_prompt, prompt)
+
+    inputs = tokenizer(text_prompt, return_tensors="pt")
+    if device and device != "auto":
+        inputs = {key: value.to(device) for key, value in inputs.items()}
+
+    temperature = float(cfg.get("temperature", 0.1))
+    capture_hidden = bool(cfg.get("capture_hidden", False))
+    generate_kwargs = {
+        "max_new_tokens": int(cfg.get("max_new_tokens", cfg.get("max_tokens", 900))),
+        "do_sample": temperature > 0,
+        "temperature": temperature if temperature > 0 else None,
+        "return_dict_in_generate": True,
+        "output_hidden_states": capture_hidden,
+    }
+    if cfg.get("top_p") not in {None, ""}:
+        generate_kwargs["top_p"] = float(cfg.get("top_p"))
+    if tokenizer.eos_token_id is not None:
+        generate_kwargs["pad_token_id"] = tokenizer.eos_token_id
+    generate_kwargs = {key: value for key, value in generate_kwargs.items() if value is not None}
+
+    with torch.no_grad():
+        generated = model.generate(**inputs, **generate_kwargs)
+
+    input_len = int(inputs["input_ids"].shape[-1])
+    sequence = generated.sequences[0]
+    completion_ids = sequence[input_len:]
+    content = tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
+    usage = {
+        "prompt_tokens": input_len,
+        "completion_tokens": int(completion_ids.shape[-1]),
+        "total_tokens": int(sequence.shape[-1]),
+    }
+
+    hidden_summary = {}
+    if capture_hidden and getattr(generated, "hidden_states", None):
+        hidden_states = generated.hidden_states
+        last_step = hidden_states[-1] if hidden_states else []
+        last_layer = last_step[-1] if last_step else None
+        hidden_summary = {
+            "captured": True,
+            "generated_steps": len(hidden_states),
+            "layers_per_step": len(last_step) if last_step else 0,
+            "last_layer_shape": list(last_layer.shape) if last_layer is not None else [],
+        }
+
+    return {
+        "content": content,
+        "usage": usage,
+        "response_model": model_ref,
+        "request_model": model_ref,
+        "hidden": hidden_summary,
+    }
+
 def call_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
     started = time.perf_counter()
     backend = str(cfg.get("backend", "")).lower()
@@ -188,6 +337,8 @@ def call_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
         result = call_openai_compatible_result(cfg, prompt, system_prompt)
     elif backend in {"command", "local", "local-command"}:
         result = call_command_llm_result(cfg, prompt, system_prompt)
+    elif backend in {"huggingface", "hf", "transformers"}:
+        result = call_huggingface_result(cfg, prompt, system_prompt)
     else:
         raise SystemExit(f"Unknown LLM backend: {cfg.get('backend')!r}")
 

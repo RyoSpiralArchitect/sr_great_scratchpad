@@ -65,6 +65,12 @@ python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" llm-config
   --command "python3 -S ${repo_root}/scripts/fake_llm.py" \
   --default
 
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" smoke \
+  --profile fake-local \
+  --trace-out "${tmp_root}/runs/fake_local_smoke.jsonl" \
+  --run-id "live-fake-local-smoke"
+test -f "${tmp_root}/runs/fake_local_smoke.manifest.json"
+
 python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" annotate \
   --profile fake-local \
   --text "Semantic Compression preserves the conclusion while losing the interaction trajectory." \
@@ -92,8 +98,10 @@ python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" chat monda
   --profile fake-chat \
   --text "前のSemantic CompressionとTopic Driftの話を踏まえて、runtimeの位置づけを短く見たい。" \
   --yes \
-  --trace-out "${tmp_root}/chat_trace.jsonl"
+  --trace-out "${tmp_root}/chat_trace.jsonl" \
+  --run-id "live-chat-smoke"
 wc -l "${tmp_root}/chat_trace.jsonl"
+test -f "${tmp_root}/chat_trace.manifest.json"
 
 echo
 echo "## Chat runtime queued write smoke"
@@ -106,6 +114,9 @@ python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" chat monda
   --trace-out "${tmp_root}/chat_queue_trace.jsonl"
 python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review list monday-meawness
 queued_item="$(find "${tmp_root}/review_queue/monday-meawness" -name '*.json' -print -quit)"
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review edit monday-meawness "$(basename "${queued_item}")" \
+  --text "Edited queued runtime note: review queue can change memory before apply." \
+  --center "review queue edit before apply"
 python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review apply monday-meawness "$(basename "${queued_item}")"
 python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review list monday-meawness --status applied
 
