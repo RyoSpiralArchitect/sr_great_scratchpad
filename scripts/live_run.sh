@@ -98,10 +98,15 @@ python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" chat monda
   --profile fake-chat \
   --text "前のSemantic CompressionとTopic Driftの話を踏まえて、runtimeの位置づけを短く見たい。" \
   --yes \
+  --policy active \
   --trace-out "${tmp_root}/chat_trace.jsonl" \
   --run-id "live-chat-smoke"
 wc -l "${tmp_root}/chat_trace.jsonl"
 test -f "${tmp_root}/chat_trace.manifest.json"
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" trace summary "${tmp_root}/chat_trace.jsonl" >/dev/null
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" trace show "${tmp_root}/chat_trace.jsonl" --line 2 >/dev/null
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" trace report "${tmp_root}/chat_trace.jsonl" --out "${tmp_root}/chat_report.md"
+test -f "${tmp_root}/chat_report.md"
 
 echo
 echo "## Chat runtime queued write smoke"
@@ -112,13 +117,30 @@ python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" chat monda
   --queue-writes \
   --quiet \
   --trace-out "${tmp_root}/chat_queue_trace.jsonl"
-python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review list monday-meawness
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review list monday-meawness --audit
 queued_item="$(find "${tmp_root}/review_queue/monday-meawness" -name '*.json' -print -quit)"
 python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review edit monday-meawness "$(basename "${queued_item}")" \
-  --text "Edited queued runtime note: review queue can change memory before apply." \
-  --center "review queue edit before apply"
-python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review apply monday-meawness "$(basename "${queued_item}")"
+  --text "Runtime review queue keeps external memory writes inspectable before durable memory. Runtime review queue and external memory are explicit anchors in this queued note." \
+  --center "Runtime review queue for external memory" \
+  --trajectory "A model-authored memory write moves through review before becoming durable" \
+  --anchors "Runtime review queue, external memory" \
+  --assumptions "review queue protects scratchpad memory" \
+  --open-questions "which queued notes should auto-apply" \
+  --drift-risks "unsafe notes becoming memory without review"
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review show monday-meawness "$(basename "${queued_item}")" >/dev/null
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review apply monday-meawness --all-safe
 python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" review list monday-meawness --status applied
+
+echo
+echo "## Scenario experiment fake model smoke"
+python3 -S "${repo_root}/sr_great_scratchpad.py" --root "${tmp_root}" experiment run "${repo_root}/scenarios/topic_drift.md" \
+  --profiles fake-chat \
+  --policy active \
+  --queue-writes \
+  --yes \
+  --quiet \
+  --out-dir "${tmp_root}/runs/topic_drift"
+test -f "${tmp_root}/runs/topic_drift/experiment_report.md"
 
 echo
 echo "Live run complete. Inspect artifacts under: ${tmp_root}"

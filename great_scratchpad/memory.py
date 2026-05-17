@@ -4,9 +4,9 @@ import json
 import uuid
 from pathlib import Path
 
-from .audit import audit_turn_md
+from .audit import audit_turn_md, audit_turn_values
 from .storage import ensure_root, ensure_thread, load_meta, now_iso, safe_id, save_meta
-from .text import auto_keys, build_turn_md, first_heading, iter_markdown_files, limit_text, parse_section, score_doc, snippet
+from .text import auto_keys, build_turn_md, first_heading, iter_markdown_files, limit_text, parse_section, score_doc, score_doc_details, snippet
 
 def recent_turn_files(tdir: Path, n: int) -> list[Path]:
     turns = sorted((tdir / "turns").glob("*.md"))
@@ -118,6 +118,74 @@ def save_review_item(path: Path, item: dict) -> None:
     item["updated_at"] = now_iso()
     path.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
 
+def audit_review_item(item: dict, path: Path | None = None) -> dict:
+    return audit_turn_values(
+        raw=str(item.get("text", "")),
+        center=str(item.get("center", "")),
+        trajectory=str(item.get("trajectory", "")),
+        anchors=str(item.get("anchors", "")),
+        assumptions=str(item.get("assumptions", "")),
+        open_questions=str(item.get("open_questions", "")),
+        drift_risks=str(item.get("drift_risks", "")),
+        path=str(path) if path else str(item.get("id", "(draft)")),
+    )
+
+def review_item_is_safe(item: dict, audit_result: dict | None = None) -> bool:
+    if item.get("status") != "pending":
+        return False
+    audit_result = audit_result or audit_review_item(item)
+    return (
+        audit_result.get("status") in {"ok", "roomy"}
+        and not audit_result.get("unsupported_anchors")
+        and int(audit_result.get("raw_chars", 0)) > 0
+    )
+
+def render_review_item(path: Path, item: dict, include_audit: bool = True) -> str:
+    lines = [
+        f"# Review item {path.name}",
+        "",
+        f"- Status: {item.get('status', '')}",
+        f"- Thread: {item.get('thread_id', '')}",
+        f"- Created: {item.get('created_at', '')}",
+        f"- Action: {item.get('action', '')}",
+        "",
+        "## Text",
+        "",
+        str(item.get("text", "")).strip() or "(empty)",
+        "",
+        "## Annotation",
+        "",
+        f"- Center: {inline_field(str(item.get('center', '')), '(not specified)')}",
+        f"- Trajectory: {inline_field(str(item.get('trajectory', '')), '(not specified)')}",
+        f"- Anchors: {inline_field(str(item.get('anchors', '')))}",
+        f"- Local assumptions: {inline_field(str(item.get('assumptions', '')))}",
+        f"- Open questions: {inline_field(str(item.get('open_questions', '')))}",
+        f"- Drift risks: {inline_field(str(item.get('drift_risks', '')))}",
+        "",
+    ]
+    if include_audit:
+        audit = audit_review_item(item, path)
+        lines.extend(
+            [
+                "## Audit preview",
+                "",
+                f"- raw_chars: {audit['raw_chars']}",
+                f"- annotation_chars: {audit['annotation_chars']}",
+                f"- ratio: {audit['ratio']}",
+                f"- status: {audit['status']}",
+                f"- safe_to_apply: {review_item_is_safe(item, audit)}",
+                f"- anchor_count: {audit['anchor_count']}",
+            ]
+        )
+        missing = audit.get("missing_fields", [])
+        if missing:
+            lines.append(f"- missing_fields: {', '.join(missing)}")
+        unsupported = audit.get("unsupported_anchors", [])
+        if unsupported:
+            lines.append(f"- unsupported_anchors: {', '.join(unsupported)}")
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
 def edit_review_item(root: Path, thread_id: str, item_id: str, updates: dict[str, str]) -> tuple[dict, Path]:
     item, item_path = load_review_item(root, thread_id, item_id)
     if item.get("status") != "pending":
@@ -187,6 +255,16 @@ def apply_review_item(root: Path, thread_id: str, item_id: str) -> tuple[int, Pa
     item["turn_path"] = str(turn_path)
     save_review_item(item_path, item)
     return turn_no, turn_path, item_path
+
+def apply_safe_review_items(root: Path, thread_id: str) -> list[tuple[int, Path, Path, dict]]:
+    applied: list[tuple[int, Path, Path, dict]] = []
+    for item_path, item in iter_review_items(root, thread_id, status="pending"):
+        audit = audit_review_item(item, item_path)
+        if not review_item_is_safe(item, audit):
+            continue
+        turn_no, turn_path, applied_item_path = apply_review_item(root, thread_id, item_path.name)
+        applied.append((turn_no, turn_path, applied_item_path, audit))
+    return applied
 
 def reject_review_item(root: Path, thread_id: str, item_id: str) -> Path:
     item, item_path = load_review_item(root, thread_id, item_id)
@@ -284,9 +362,33 @@ def inline_field(value: str, fallback: str = "(none)", max_chars: int = 220) -> 
     value = limit_text(value, max_chars)
     return " / ".join(line.strip() for line in value.splitlines() if line.strip())
 
+def retrieval_reason_line(query: str, path: Path, text: str, score: float | None) -> str:
+    if score is None:
+        return "- Selection: recent window"
+    details = score_doc_details(query, text, path)
+    bits: list[str] = []
+    if details.get("exact_phrase"):
+        bits.append("exact phrase")
+    matched = details.get("matched_tokens", [])
+    if matched:
+        shown = ", ".join(str(token) for token in matched[:12])
+        if len(matched) > 12:
+            shown += f", +{len(matched) - 12} more"
+        bits.append(f"matched tokens: {shown}")
+    if details.get("all_query_tokens"):
+        bits.append("all query tokens")
+    if details.get("path_matches"):
+        bits.append("path match")
+    if details.get("block_bonus"):
+        bits.append("trajectory block bonus")
+    if not bits:
+        bits.append("score-only match")
+    return f"- Selection: score={score:.1f}; " + "; ".join(bits)
+
 def source_index_lines(
     tdir: Path,
     sources: list[tuple[str, Path, str, float | None]],
+    query: str = "",
 ) -> list[str]:
     if not sources:
         return ["(no sources selected)", ""]
@@ -298,6 +400,7 @@ def source_index_lines(
             [
                 f"### {kind}: {path.relative_to(tdir)}{score_label}",
                 "",
+                retrieval_reason_line(query, path, text, score),
                 f"- Center: {inline_field(parse_section(text, 'Center pin'), '(not specified)')}",
                 f"- Trajectory: {inline_field(parse_section(text, 'Trajectory'), '(not specified)')}",
                 f"- Anchors: {inline_field(parse_section(text, 'Anchors'))}",
@@ -360,7 +463,7 @@ def build_context_pack(
         [
             "## Source trajectory index",
             "",
-            *source_index_lines(tdir, sources),
+            *source_index_lines(tdir, sources, query=query),
         ]
     )
 

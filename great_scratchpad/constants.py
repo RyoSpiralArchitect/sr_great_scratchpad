@@ -117,6 +117,24 @@ Rules:
 - scratchpad.add_note should store externally visible trajectory notes, not hidden reasoning.
 - Never reveal hidden chain-of-thought. Concise rationale is okay when useful.
 """
+ACTION_POLICIES = {
+    "balanced": "Use scratchpad tools when they materially improve continuity. Prefer search or recent before pack. Queue or ask before writing notes.",
+    "conservative": "Prefer answering from current context and recent scratchpad first. Search only when the user references prior thread context or the center pin is ambiguous. Avoid writing notes unless explicitly useful.",
+    "active": "Actively search when a message references prior concepts, coined terms, topic drift, or unresolved questions. Use pack when a single search result is too thin.",
+    "writer": "Use search/recent for grounding, and draft scratchpad.add_note when the current turn creates a reusable trajectory anchor. Keep writes concise and externally visible.",
+    "read-only": "Use only scratchpad.search, scratchpad.recent, scratchpad.pack, and scratchpad.audit. Do not call scratchpad.add_note.",
+}
+
+def chat_runtime_system(policy: str = "balanced") -> str:
+    name = policy if policy in ACTION_POLICIES else "balanced"
+    return (
+        CHAT_RUNTIME_SYSTEM
+        + "\nAction policy: "
+        + name
+        + "\n"
+        + ACTION_POLICIES[name]
+        + "\n"
+    )
 CHAT_PROMPT_TEMPLATE = """Thread: {thread_id}
 
 Recent scratchpad context:

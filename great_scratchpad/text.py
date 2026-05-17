@@ -170,31 +170,49 @@ def iter_markdown_files(tdir: Path) -> Iterable[Path]:
             yield from sorted(d.glob("*.md"))
 
 def score_doc(query: str, text: str, path: Path) -> float:
+    return score_doc_details(query, text, path)["score"]
+
+def score_doc_details(query: str, text: str, path: Path) -> dict:
     q = query.lower().strip()
     body = text.lower()
     q_tokens = tokenize(query)
     d_tokens = Counter(tokenize(text + "\n" + str(path)))
 
     score = 0.0
+    exact_phrase = bool(q and q in body)
+    matched_tokens: list[str] = []
+    path_matches: list[str] = []
 
-    if q and q in body:
+    if exact_phrase:
         score += 20.0
 
     for token in q_tokens:
         tf = d_tokens.get(token, 0)
         if tf:
+            matched_tokens.append(token)
             score += min(tf, 12) * 2.0
             if token in path.name.lower():
+                path_matches.append(token)
                 score += 3.0
 
-    if q_tokens and all(token in d_tokens for token in q_tokens):
+    all_query_tokens = bool(q_tokens and all(token in d_tokens for token in q_tokens))
+    if all_query_tokens:
         score += 8.0
 
     # Prefer trajectory-preserving blocks slightly when relevant.
-    if "/blocks/" in str(path).replace("\\", "/"):
+    block_bonus = "/blocks/" in str(path).replace("\\", "/")
+    if block_bonus:
         score += 1.5
 
-    return score
+    return {
+        "score": score,
+        "exact_phrase": exact_phrase,
+        "query_tokens": q_tokens,
+        "matched_tokens": matched_tokens,
+        "path_matches": path_matches,
+        "all_query_tokens": all_query_tokens,
+        "block_bonus": block_bonus,
+    }
 
 def snippet(text: str, query: str, width: int = 360) -> str:
     lower = text.lower()
