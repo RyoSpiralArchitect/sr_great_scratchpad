@@ -159,6 +159,42 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertIn("json_parse_error", [event["event"] for event in events])
             self.assertEqual(events[-1]["repair_attempts"], 1)
 
+    def test_chat_normalizes_action_name_in_type_field(self) -> None:
+        code = (
+            "import json,sys\n"
+            "p=sys.stdin.read()\n"
+            "if 'Action 1: scratchpad.add_note' in p:\n"
+            " print(json.dumps({'type':'final','message':'done'}))\n"
+            "else:\n"
+            " print(json.dumps({'type':'scratchpad.add_note','text':'note from drifted schema'}))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            cfg = {
+                "backend": "command",
+                "command": [sys.executable, "-S", "-c", code],
+                "timeout": 5,
+            }
+            events: list[dict] = []
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="write",
+                history=[],
+                yes=True,
+                verbose=False,
+                trace_events=events,
+            )
+
+            self.assertEqual(message, "done")
+            tool_event = next(event for event in events if event["event"] == "tool_observation")
+            self.assertEqual(tool_event["action"], "scratchpad.add_note")
+            self.assertIn("wrote turn", tool_event["observation"])
+
     def test_audit_short_raw_roomy_annotation_is_not_overgrown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -17,6 +17,14 @@ def parse_chat_json(text: str) -> dict:
     except (ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(f"Could not parse chat runtime JSON: {exc}\nOutput:\n{text}") from exc
 
+def normalize_chat_payload(obj: dict) -> dict:
+    kind = str(obj.get("type", "")).strip()
+    if kind.startswith("scratchpad.") and not obj.get("action"):
+        obj = dict(obj)
+        obj["type"] = "action"
+        obj["action"] = kind
+    return obj
+
 def chat_history_text(history: list[dict[str, str]], max_chars: int = 4000) -> str:
     lines: list[str] = []
     for msg in history:
@@ -288,6 +296,7 @@ def run_chat_turn(
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
+        obj = normalize_chat_payload(obj)
         kind = str(obj.get("type", "")).strip().lower()
         record_trace(
             trace_events,
