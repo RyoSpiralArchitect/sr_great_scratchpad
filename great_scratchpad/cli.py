@@ -499,6 +499,7 @@ def cmd_review(args: argparse.Namespace) -> None:
         if args.audit_preview:
             item, item_path = load_review_item(root, args.thread, args.item)
             print(render_review_item(item_path, item, include_audit=True), end="")
+            return
         turn_no, turn_path, item_path = apply_review_item(root, args.thread, args.item)
         print(f"Applied review item {item_path.name} as turn {turn_no:06d}: {turn_path}")
         return
@@ -1259,7 +1260,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp2 = review_sub.add_parser("apply", help="Apply one queued write request as a note turn.")
     sp2.add_argument("thread")
     sp2.add_argument("item", nargs="?")
-    sp2.add_argument("--audit-preview", action="store_true", help="Print audit preview before applying.")
+    sp2.add_argument("--audit-preview", action="store_true", help="Print audit preview without applying.")
     sp2.add_argument("--all-safe", action="store_true", help="Apply all pending items whose audit preview is safe.")
     sp2.set_defaults(func=cmd_review)
 

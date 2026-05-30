@@ -139,21 +139,26 @@ Speaker: {speaker}
 """
 
 def parse_section(md: str, section_name: str) -> str:
-    pattern = rf"^## {re.escape(section_name)}[ \t]*\r?\n"
+    pattern = rf"^(#{{2,6}})[ \t]+{re.escape(section_name)}[ \t]*\r?\n"
     m = re.search(pattern, md, flags=re.MULTILINE)
     if not m:
         return ""
 
+    start_level = len(m.group(1))
     known_sections = list(TURN_SECTION_NAMES)
     if section_name not in known_sections:
         known_sections.append(section_name)
     next_sections = [s for s in known_sections if s != section_name]
     next_pattern = "|".join(re.escape(s) for s in next_sections)
-    next_m = re.search(
-        rf"^## (?:{next_pattern})[ \t]*\r?\n",
+    next_m = None
+    for candidate in re.finditer(
+        rf"^(#{{2,6}})[ \t]+(?:{next_pattern})[ \t]*\r?\n",
         md[m.end():],
         flags=re.MULTILINE,
-    )
+    ):
+        if len(candidate.group(1)) <= start_level:
+            next_m = candidate
+            break
     end = m.end() + next_m.start() if next_m else len(md)
     return md[m.end():end].strip()
 

@@ -43,13 +43,13 @@ def add_turn(
     turn_no = int(meta.get("last_turn", 0)) + 1
 
     keys = auto_keys(
-        raw,
+        anchors,
         center,
         trajectory,
-        anchors,
-        assumptions,
         open_questions,
         drift_risks,
+        assumptions,
+        raw,
     )
 
     md = build_turn_md(

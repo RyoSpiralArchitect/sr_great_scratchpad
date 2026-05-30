@@ -37,6 +37,48 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertIn("## User-visible heading", block_text)
             self.assertIn("after", block_text)
 
+    def test_parse_section_accepts_compact_block_headings(self) -> None:
+        md = (
+            "# Block\n"
+            "#### Center pin\n"
+            "中心軸\n"
+            "#### Trajectory\n"
+            "軌道\n"
+            "#### Anchors\n"
+            "Topic Drift\n"
+        )
+
+        self.assertEqual(gs.parse_section(md, "Center pin"), "中心軸")
+        self.assertEqual(gs.parse_section(md, "Trajectory"), "軌道")
+
+    def test_annotation_prompt_preserves_roomy_scaffold_intent(self) -> None:
+        prompt = gs.build_annotation_prompt("Semantic Compression causes Topic Drift.")
+
+        self.assertIn("This is not a summary task.", prompt)
+        self.assertIn("roomy self-scaffold note", prompt)
+        self.assertIn("do not over-compress", prompt)
+
+    def test_add_turn_prioritizes_annotation_keys_before_raw(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gs.ensure_thread_dirs(root, "t")
+            raw = ", ".join(f"raw-fragment-{i}" for i in range(30))
+            _, path = gs.add_turn(
+                root=root,
+                thread_id="t",
+                speaker="user",
+                raw=raw,
+                center="Great Scratchpad key priority",
+                trajectory="Use annotation fields as retrieval signposts",
+                anchors="Semantic Compression, Topic Drift",
+            )
+
+            keys = [
+                key.strip()
+                for key in gs.parse_section(path.read_text(encoding="utf-8"), "Retrieval keys").split(",")
+            ]
+            self.assertEqual(keys[:2], ["Semantic Compression", "Topic Drift"])
+
     def test_compact_rejects_non_positive_block_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -629,6 +671,39 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertEqual(len(applied), 1)
             self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 1)
             self.assertIn("Semantic Compression", applied[0][1].read_text(encoding="utf-8"))
+
+    def test_review_apply_audit_preview_does_not_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            parser = gs.build_parser()
+            action = {
+                "text": "Topic Drift should stay pending while audit preview only renders.",
+                "center": "audit preview",
+                "trajectory": "Previewing a queued note should not make memory durable",
+                "anchors": "Topic Drift, audit preview",
+            }
+            item_path = gs.queue_add_note(root, "t", action)
+
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "review",
+                    "apply",
+                    "t",
+                    item_path.name,
+                    "--audit-preview",
+                ]
+            )
+            out = io.StringIO()
+            with redirect_stdout(out):
+                args.func(args)
+
+            item = json.loads(item_path.read_text(encoding="utf-8"))
+            self.assertIn("## Audit preview", out.getvalue())
+            self.assertEqual(item["status"], "pending")
+            self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 0)
 
     def test_read_only_policy_blocks_add_note(self) -> None:
         code = (

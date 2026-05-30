@@ -66,12 +66,20 @@ ANNOTATION_GUIDE = """# Great Scratchpad annotation guide
 - 「つまり〜」だけで済ませること
 - rawにない概念を、あったことにすること
 """
-ANNOTATION_PROMPT_TEMPLATE = """You are drafting Great Scratchpad annotations.
+ANNOTATION_PROMPT_TEMPLATE = """You are writing Great Scratchpad annotations.
+This is not a summary task.
+This is a roomy self-scaffold note for future you, or another future thread,
+to reconstruct why this turn moved the conversation the way it did.
 
 Use only the externally visible raw articulation below.
 Do not invent hidden reasoning, private chain-of-thought, or facts not present in the raw articulation.
-Preserve trajectory, not just conclusions.
-Keep uncertainty, local wording, coined terms, metaphors, and drift risks when visible.
+Your job is to preserve trajectory, not just conclusions.
+Write with enough room:
+- preserve local wording, coined terms, metaphors, uncertainty, and drift risks when visible
+- write as if future-you will need this note to regain the conversational footing
+- do not over-compress into meeting minutes
+- do not turn the turn into only a conclusion
+- if something is unclear or unresolved, say so
 
 Return only a JSON object with these exact string fields:
 - center
@@ -83,7 +91,7 @@ Return only a JSON object with these exact string fields:
 
 Field meanings:
 - center: the center pin of this turn
-- trajectory: how this turn moves the conversation
+- trajectory: how this turn moves the conversation, including visible steps and pivots
 - anchors: reusable terms, metaphors, phrases, or names, comma-separated
 - assumptions: local assumptions visible in this turn
 - open_questions: unresolved questions left by this turn
