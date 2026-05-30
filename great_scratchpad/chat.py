@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 import time
 
-from .constants import CHAT_PROMPT_TEMPLATE, CHAT_RUNTIME_SYSTEM
+from .constants import CHAT_PROMPT_TEMPLATE, chat_runtime_system
 from .llm import call_llm_result, extract_json_object, llm_config_metadata
 from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_recent_turns, render_search_results
 from .storage import now_iso
@@ -16,6 +16,14 @@ def parse_chat_json(text: str) -> dict:
         return extract_json_object(text)
     except (ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(f"Could not parse chat runtime JSON: {exc}\nOutput:\n{text}") from exc
+
+def normalize_chat_payload(obj: dict) -> dict:
+    kind = str(obj.get("type", "")).strip()
+    if kind.startswith("scratchpad.") and not obj.get("action"):
+        obj = dict(obj)
+        obj["type"] = "action"
+        obj["action"] = kind
+    return obj
 
 def chat_history_text(history: list[dict[str, str]], max_chars: int = 4000) -> str:
     lines: list[str] = []
@@ -206,6 +214,7 @@ def run_chat_turn(
     trace_events: list[dict] | None = None,
     json_repair_steps: int = 1,
     queue_writes: bool = False,
+    policy: str = "balanced",
 ) -> str:
     observations: list[str] = []
     recent_context = render_recent_turns(tdir, n=recent_n, max_chars=1200)
@@ -222,8 +231,10 @@ def run_chat_turn(
         max_steps=max_steps,
         json_repair_steps=json_repair_steps,
         queue_writes=queue_writes,
+        policy=policy,
         llm=llm_config_metadata(cfg),
     )
+    runtime_system = chat_runtime_system(policy)
 
     while True:
         prompt = build_chat_prompt(
@@ -234,7 +245,7 @@ def run_chat_turn(
             observations=observations,
         )
         try:
-            result = call_llm_result(cfg, prompt, CHAT_RUNTIME_SYSTEM)
+            result = call_llm_result(cfg, prompt, runtime_system)
         except SystemExit as exc:
             record_trace(
                 trace_events,
@@ -246,7 +257,7 @@ def run_chat_turn(
                 llm={
                     **llm_config_metadata(cfg),
                     "prompt_chars": len(prompt),
-                    "system_prompt_chars": len(CHAT_RUNTIME_SYSTEM),
+                    "system_prompt_chars": len(runtime_system),
                 },
             )
             raise
@@ -285,6 +296,7 @@ def run_chat_turn(
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
+        obj = normalize_chat_payload(obj)
         kind = str(obj.get("type", "")).strip().lower()
         record_trace(
             trace_events,
@@ -343,15 +355,18 @@ def run_chat_turn(
         action_name = str(obj.get("action", "")).strip()
         if verbose:
             print(f"[tool] {action_name}")
-        observation = run_scratchpad_action(
-            root=root,
-            tdir=tdir,
-            thread_id=thread_id,
-            action_obj=obj,
-            yes=yes,
-            max_tool_chars=max_tool_chars,
-            queue_writes=queue_writes,
-        )
+        if policy == "read-only" and action_name == "scratchpad.add_note":
+            observation = "scratchpad.add_note blocked: read-only policy is active"
+        else:
+            observation = run_scratchpad_action(
+                root=root,
+                tdir=tdir,
+                thread_id=thread_id,
+                action_obj=obj,
+                yes=yes,
+                max_tool_chars=max_tool_chars,
+                queue_writes=queue_writes,
+            )
         tool_steps += 1
         record_trace(
             trace_events,

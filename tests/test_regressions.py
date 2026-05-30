@@ -37,6 +37,48 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertIn("## User-visible heading", block_text)
             self.assertIn("after", block_text)
 
+    def test_parse_section_accepts_compact_block_headings(self) -> None:
+        md = (
+            "# Block\n"
+            "#### Center pin\n"
+            "中心軸\n"
+            "#### Trajectory\n"
+            "軌道\n"
+            "#### Anchors\n"
+            "Topic Drift\n"
+        )
+
+        self.assertEqual(gs.parse_section(md, "Center pin"), "中心軸")
+        self.assertEqual(gs.parse_section(md, "Trajectory"), "軌道")
+
+    def test_annotation_prompt_preserves_roomy_scaffold_intent(self) -> None:
+        prompt = gs.build_annotation_prompt("Semantic Compression causes Topic Drift.")
+
+        self.assertIn("This is not a summary task.", prompt)
+        self.assertIn("roomy self-scaffold note", prompt)
+        self.assertIn("do not over-compress", prompt)
+
+    def test_add_turn_prioritizes_annotation_keys_before_raw(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gs.ensure_thread_dirs(root, "t")
+            raw = ", ".join(f"raw-fragment-{i}" for i in range(30))
+            _, path = gs.add_turn(
+                root=root,
+                thread_id="t",
+                speaker="user",
+                raw=raw,
+                center="Great Scratchpad key priority",
+                trajectory="Use annotation fields as retrieval signposts",
+                anchors="Semantic Compression, Topic Drift",
+            )
+
+            keys = [
+                key.strip()
+                for key in gs.parse_section(path.read_text(encoding="utf-8"), "Retrieval keys").split(",")
+            ]
+            self.assertEqual(keys[:2], ["Semantic Compression", "Topic Drift"])
+
     def test_compact_rejects_non_positive_block_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -159,6 +201,42 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertIn("json_parse_error", [event["event"] for event in events])
             self.assertEqual(events[-1]["repair_attempts"], 1)
 
+    def test_chat_normalizes_action_name_in_type_field(self) -> None:
+        code = (
+            "import json,sys\n"
+            "p=sys.stdin.read()\n"
+            "if 'Action 1: scratchpad.add_note' in p:\n"
+            " print(json.dumps({'type':'final','message':'done'}))\n"
+            "else:\n"
+            " print(json.dumps({'type':'scratchpad.add_note','text':'note from drifted schema'}))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            cfg = {
+                "backend": "command",
+                "command": [sys.executable, "-S", "-c", code],
+                "timeout": 5,
+            }
+            events: list[dict] = []
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="write",
+                history=[],
+                yes=True,
+                verbose=False,
+                trace_events=events,
+            )
+
+            self.assertEqual(message, "done")
+            tool_event = next(event for event in events if event["event"] == "tool_observation")
+            self.assertEqual(tool_event["action"], "scratchpad.add_note")
+            self.assertIn("wrote turn", tool_event["observation"])
+
     def test_audit_short_raw_roomy_annotation_is_not_overgrown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -230,6 +308,7 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
 
             self.assertIn("## Source trajectory index", pack)
             self.assertIn("### recent: turns/000001-user.md", pack)
+            self.assertIn("- Selection: recent window", pack)
             self.assertIn("- Center: semantic compression", pack)
             self.assertIn("- Trajectory: The thread moves toward retrieval-backed continuity.", pack)
 
@@ -526,6 +605,203 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertTrue(turn_path.exists())
             self.assertIn("edited queued note", turn_path.read_text(encoding="utf-8"))
             self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 2)
+
+    def test_trace_report_and_show_summarize_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trace_path = Path(tmp) / "trace.jsonl"
+            events = [
+                {
+                    "event": "turn_start",
+                    "run_id": "trace-test",
+                    "llm": {"profile": "p", "model": "m", "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1}},
+                },
+                {
+                    "event": "model_output",
+                    "run_id": "trace-test",
+                    "tool_step": 0,
+                    "payload": {"type": "action", "action": "scratchpad.search", "query": "Topic Drift"},
+                    "llm": {"profile": "p", "model": "m", "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}},
+                },
+                {
+                    "event": "tool_observation",
+                    "run_id": "trace-test",
+                    "tool_step": 1,
+                    "action": "scratchpad.add_note",
+                    "observation": "scratchpad.add_note queued for review: review_queue/t/item.json",
+                },
+                {"event": "final", "run_id": "trace-test", "message": "done"},
+            ]
+            gs.append_trace_events(trace_path, events)
+
+            loaded = gs.load_trace_events(trace_path)
+            data = gs.trace_report_data(loaded)
+            report = gs.trace_report_markdown(loaded)
+
+            self.assertEqual(data["run_ids"], ["trace-test"])
+            self.assertEqual(data["queued_writes"], 1)
+            self.assertIn("scratchpad.search", report)
+            self.assertIn("Queued writes: 1", report)
+            self.assertIn('"event": "model_output"', gs.trace_show(loaded, line=2))
+
+    def test_review_show_and_apply_all_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            action = {
+                "text": (
+                    "Semantic Compression and Topic Drift need a review queue before scratchpad notes are applied. "
+                    "The queue lets us inspect anchors, center pins, and drift risks before memory becomes durable."
+                ),
+                "center": "Semantic Compression and Topic Drift review queue",
+                "trajectory": "A queued note becomes inspectable before durable memory",
+                "anchors": "Semantic Compression, Topic Drift, review queue",
+                "assumptions": "review queue protects scratchpad memory",
+                "open_questions": "when queued notes should auto-apply",
+                "drift_risks": "unsafe notes becoming memory without review",
+            }
+            item_path = gs.queue_add_note(root, "t", action)
+            item = json.loads(item_path.read_text(encoding="utf-8"))
+            audit = gs.audit_review_item(item, item_path)
+
+            self.assertTrue(gs.review_item_is_safe(item, audit))
+            rendered = gs.render_review_item(item_path, item)
+            self.assertIn("## Audit preview", rendered)
+            applied = gs.apply_safe_review_items(root, "t")
+
+            self.assertEqual(len(applied), 1)
+            self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 1)
+            self.assertIn("Semantic Compression", applied[0][1].read_text(encoding="utf-8"))
+
+    def test_review_apply_audit_preview_does_not_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            parser = gs.build_parser()
+            action = {
+                "text": "Topic Drift should stay pending while audit preview only renders.",
+                "center": "audit preview",
+                "trajectory": "Previewing a queued note should not make memory durable",
+                "anchors": "Topic Drift, audit preview",
+            }
+            item_path = gs.queue_add_note(root, "t", action)
+
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "review",
+                    "apply",
+                    "t",
+                    item_path.name,
+                    "--audit-preview",
+                ]
+            )
+            out = io.StringIO()
+            with redirect_stdout(out):
+                args.func(args)
+
+            item = json.loads(item_path.read_text(encoding="utf-8"))
+            self.assertIn("## Audit preview", out.getvalue())
+            self.assertEqual(item["status"], "pending")
+            self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 0)
+
+    def test_read_only_policy_blocks_add_note(self) -> None:
+        code = (
+            "import json,sys\n"
+            "p=sys.stdin.read()\n"
+            "if 'blocked: read-only policy' in p:\n"
+            " print(json.dumps({'type':'final','message':'blocked observed'}))\n"
+            "else:\n"
+            " print(json.dumps({'type':'action','action':'scratchpad.add_note','text':'Do not write this'}))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            cfg = {
+                "backend": "command",
+                "command": [sys.executable, "-S", "-c", code],
+                "timeout": 5,
+            }
+            events: list[dict] = []
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="try to write",
+                history=[],
+                yes=True,
+                verbose=False,
+                trace_events=events,
+                policy="read-only",
+            )
+
+            self.assertEqual(message, "blocked observed")
+            self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 0)
+            self.assertIn("read-only policy", events[2]["observation"])
+
+    def test_experiment_run_writes_profile_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parser = gs.build_parser()
+            scenario = root / "scenario.md"
+            scenario.write_text(
+                "# Topic drift scenario\n\n"
+                "## First\n"
+                "Use memory to re-center Topic Drift.\n\n"
+                "## Second\n"
+                "Now decide whether a queued note helps.\n",
+                encoding="utf-8",
+            )
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "llm-config",
+                    "local",
+                    "--profile",
+                    "fake-chat",
+                    "--command",
+                    f"{sys.executable} -S {Path('scripts/fake_chat_llm.py').resolve()}",
+                    "--default",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                args.func(args)
+
+            out_dir = root / "runs" / "scenario"
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "experiment",
+                    "run",
+                    str(scenario),
+                    "--profiles",
+                    "fake-chat",
+                    "--out-dir",
+                    str(out_dir),
+                    "--queue-writes",
+                    "--yes",
+                    "--quiet",
+                    "--policy",
+                    "active",
+                    "--json",
+                ]
+            )
+            out = io.StringIO()
+            with redirect_stdout(out):
+                args.func(args)
+
+            result = json.loads(out.getvalue())
+            self.assertEqual(result["turn_count"], 2)
+            self.assertEqual(result["policy"], "active")
+            self.assertTrue(Path(result["report_path"]).exists())
+            profile = result["profiles"][0]
+            self.assertEqual(profile["status"], "ok")
+            self.assertTrue(Path(profile["trace_path"]).exists())
+            self.assertTrue(Path(profile["report_path"]).exists())
 
 
 if __name__ == "__main__":

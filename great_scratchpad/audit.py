@@ -135,3 +135,52 @@ def audit_turn_md(path: Path) -> dict:
         "anchor_count": len(anchors_list),
         "unsupported_anchors": unsupported_anchors,
     }
+
+def audit_turn_values(
+    raw: str,
+    center: str = "",
+    trajectory: str = "",
+    anchors: str = "",
+    assumptions: str = "",
+    open_questions: str = "",
+    drift_risks: str = "",
+    path: str = "(draft)",
+) -> dict:
+    sections = {
+        "Center pin": center,
+        "Trajectory": trajectory,
+        "Anchors": anchors,
+        "Local assumptions": assumptions,
+        "Open questions": open_questions,
+        "Drift risks": drift_risks,
+    }
+    annotation = annotation_text_from_sections(sections)
+    raw_chars = len(raw.strip())
+    annotation_chars = len(annotation.strip())
+    ratio = annotation_chars / raw_chars if raw_chars else 0.0
+    status = classify_ratio(raw_chars, ratio)
+    missing_fields = [
+        name for name, value in sections.items()
+        if is_placeholder(value)
+    ]
+    anchors_list = split_anchor_items(anchors)
+    unsupported_anchors = [
+        a for a in anchors_list
+        if not anchor_supported_by_raw(a, raw)
+    ]
+
+    if unsupported_anchors and status in {"ok", "roomy"}:
+        status = "check_anchors"
+    if len(missing_fields) >= 4 and status in {"ok", "roomy"}:
+        status = "thin_annotation"
+
+    return {
+        "path": path,
+        "raw_chars": raw_chars,
+        "annotation_chars": annotation_chars,
+        "ratio": round(ratio, 3),
+        "status": status,
+        "missing_fields": missing_fields,
+        "anchor_count": len(anchors_list),
+        "unsupported_anchors": unsupported_anchors,
+    }

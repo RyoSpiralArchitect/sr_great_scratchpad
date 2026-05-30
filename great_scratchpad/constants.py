@@ -66,12 +66,20 @@ ANNOTATION_GUIDE = """# Great Scratchpad annotation guide
 - 「つまり〜」だけで済ませること
 - rawにない概念を、あったことにすること
 """
-ANNOTATION_PROMPT_TEMPLATE = """You are drafting Great Scratchpad annotations.
+ANNOTATION_PROMPT_TEMPLATE = """You are writing Great Scratchpad annotations.
+This is not a summary task.
+This is a roomy self-scaffold note for future you, or another future thread,
+to reconstruct why this turn moved the conversation the way it did.
 
 Use only the externally visible raw articulation below.
 Do not invent hidden reasoning, private chain-of-thought, or facts not present in the raw articulation.
-Preserve trajectory, not just conclusions.
-Keep uncertainty, local wording, coined terms, metaphors, and drift risks when visible.
+Your job is to preserve trajectory, not just conclusions.
+Write with enough room:
+- preserve local wording, coined terms, metaphors, uncertainty, and drift risks when visible
+- write as if future-you will need this note to regain the conversational footing
+- do not over-compress into meeting minutes
+- do not turn the turn into only a conclusion
+- if something is unclear or unresolved, say so
 
 Return only a JSON object with these exact string fields:
 - center
@@ -83,7 +91,7 @@ Return only a JSON object with these exact string fields:
 
 Field meanings:
 - center: the center pin of this turn
-- trajectory: how this turn moves the conversation
+- trajectory: how this turn moves the conversation, including visible steps and pivots
 - anchors: reusable terms, metaphors, phrases, or names, comma-separated
 - assumptions: local assumptions visible in this turn
 - open_questions: unresolved questions left by this turn
@@ -117,6 +125,24 @@ Rules:
 - scratchpad.add_note should store externally visible trajectory notes, not hidden reasoning.
 - Never reveal hidden chain-of-thought. Concise rationale is okay when useful.
 """
+ACTION_POLICIES = {
+    "balanced": "Use scratchpad tools when they materially improve continuity. Prefer search or recent before pack. Queue or ask before writing notes.",
+    "conservative": "Prefer answering from current context and recent scratchpad first. Search only when the user references prior thread context or the center pin is ambiguous. Avoid writing notes unless explicitly useful.",
+    "active": "Actively search when a message references prior concepts, coined terms, topic drift, or unresolved questions. Use pack when a single search result is too thin.",
+    "writer": "Use search/recent for grounding, and draft scratchpad.add_note when the current turn creates a reusable trajectory anchor. Keep writes concise and externally visible.",
+    "read-only": "Use only scratchpad.search, scratchpad.recent, scratchpad.pack, and scratchpad.audit. Do not call scratchpad.add_note.",
+}
+
+def chat_runtime_system(policy: str = "balanced") -> str:
+    name = policy if policy in ACTION_POLICIES else "balanced"
+    return (
+        CHAT_RUNTIME_SYSTEM
+        + "\nAction policy: "
+        + name
+        + "\n"
+        + ACTION_POLICIES[name]
+        + "\n"
+    )
 CHAT_PROMPT_TEMPLATE = """Thread: {thread_id}
 
 Recent scratchpad context:

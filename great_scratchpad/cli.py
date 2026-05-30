@@ -9,12 +9,13 @@ from pathlib import Path
 
 from .audit import audit_turn_md
 from .chat import append_trace_events, run_chat_turn
-from .constants import ROOT_DEFAULT
-from .experiments import add_run_id, default_manifest_path, make_run_id, trace_summary, write_manifest
+from .constants import ACTION_POLICIES, ROOT_DEFAULT
+from .experiments import add_run_id, default_manifest_path, make_run_id, run_scenario_profiles, trace_summary, write_manifest
 from .llm import call_llm_result, draft_annotation, extract_json_object, llm_config_metadata, print_annotation
-from .memory import add_turn, apply_review_item, build_context_pack, compact_one_range, edit_review_item, iter_review_items, recent_turn_files, reject_review_item, render_audit, render_recent_turns, retrieve
+from .memory import add_turn, apply_review_item, apply_safe_review_items, audit_review_item, build_context_pack, compact_one_range, edit_review_item, iter_review_items, load_review_item, recent_turn_files, reject_review_item, render_audit, render_recent_turns, render_review_item, retrieve, review_item_is_safe
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
+from .trace import load_trace_events, trace_report_data, trace_report_markdown, trace_show
 
 REPL_HELP = """Great Scratchpad REPL commands:
 
@@ -358,6 +359,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
                 "thread_id": thread_id,
                 "trace_path": str(trace_path) if trace_path else "",
                 "turns": turns,
+                "policy": args.policy,
                 "llm": llm_config_metadata(cfg),
                 "summary": trace_summary(all_trace_events),
             },
@@ -382,6 +384,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
                 trace_events=trace_events if (trace_path or manifest_path) else None,
                 json_repair_steps=args.json_repair_steps,
                 queue_writes=args.queue_writes,
+                policy=args.policy,
             )
         except SystemExit as exc:
             turns += 1
@@ -450,15 +453,57 @@ def cmd_review(args: argparse.Namespace) -> None:
         for path, item in items:
             rel = path.relative_to(root)
             text = str(item.get("text", "")).strip().replace("\n", " ")
+            audit_label = ""
+            if args.audit:
+                audit = audit_review_item(item, path)
+                audit_label = (
+                    f"\taudit={audit.get('status')}"
+                    f"\tratio={audit.get('ratio')}"
+                    f"\tsafe={review_item_is_safe(item, audit)}"
+                )
             print(
                 f"{rel}\tstatus={item.get('status')}\t"
                 f"thread={item.get('thread_id')}\t"
                 f"created={item.get('created_at')}\t"
                 f"text={limit_text(text, 140)}"
+                f"{audit_label}"
             )
         return
 
+    if args.review_cmd == "show":
+        item, item_path = load_review_item(root, args.thread, args.item)
+        if args.json:
+            payload = dict(item)
+            payload["audit_preview"] = audit_review_item(item, item_path)
+            payload["safe_to_apply"] = review_item_is_safe(item, payload["audit_preview"])
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(render_review_item(item_path, item, include_audit=True), end="")
+        return
+
     if args.review_cmd == "apply":
+        if args.audit_preview:
+            if args.all_safe:
+                raise SystemExit("--audit-preview cannot be combined with --all-safe.")
+            if not args.item:
+                raise SystemExit("Provide ITEM for --audit-preview.")
+            item, item_path = load_review_item(root, args.thread, args.item)
+            print(render_review_item(item_path, item, include_audit=True), end="")
+            return
+        if args.all_safe:
+            applied = apply_safe_review_items(root, args.thread)
+            if not applied:
+                print("(no safe pending review items)")
+                return
+            for turn_no, turn_path, item_path, audit in applied:
+                print(
+                    f"Applied safe review item {item_path.name} "
+                    f"as turn {turn_no:06d}: {turn_path} "
+                    f"(audit={audit.get('status')}, ratio={audit.get('ratio')})"
+                )
+            return
+        if not args.item:
+            raise SystemExit("Provide ITEM or use --all-safe.")
         turn_no, turn_path, item_path = apply_review_item(root, args.thread, args.item)
         print(f"Applied review item {item_path.name} as turn {turn_no:06d}: {turn_path}")
         return
@@ -618,6 +663,68 @@ def cmd_smoke(args: argparse.Namespace) -> None:
     ))
     if status != "ok":
         raise SystemExit(exit_code)
+
+def cmd_trace(args: argparse.Namespace) -> None:
+    events = load_trace_events(Path(args.trace).expanduser())
+
+    if args.trace_cmd == "summary":
+        data = trace_report_data(events)
+        if args.json:
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+        else:
+            print(trace_report_markdown(events, title=f"Trace Summary: {args.trace}"), end="")
+        return
+
+    if args.trace_cmd == "show":
+        print(trace_show(events, step=args.step, line=args.line))
+        return
+
+    if args.trace_cmd == "report":
+        report = trace_report_markdown(events, title=args.title)
+        if args.out:
+            out_path = Path(args.out).expanduser()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(report, encoding="utf-8")
+            print(f"Wrote trace report: {args.out}")
+        else:
+            print(report, end="")
+        return
+
+def cmd_experiment(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    ensure_root(root)
+
+    if args.experiment_cmd == "run":
+        profiles = [part.strip() for part in args.profiles.split(",") if part.strip()]
+        if not profiles:
+            raise SystemExit("Provide at least one profile with --profiles.")
+        out_dir = Path(args.out_dir).expanduser() if args.out_dir else root / "runs" / safe_id(Path(args.scenario).stem)
+        result = run_scenario_profiles(
+            root=root,
+            scenario_path=Path(args.scenario).expanduser(),
+            profiles=profiles,
+            llm_config=args.llm_config,
+            out_dir=out_dir,
+            thread_prefix=args.thread_prefix,
+            policy=args.policy,
+            queue_writes=args.queue_writes,
+            yes=args.yes,
+            max_steps=args.max_steps,
+            recent_n=args.recent,
+            max_tool_chars=args.max_tool_chars,
+            json_repair_steps=args.json_repair_steps,
+            quiet=args.quiet,
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+        print(f"Wrote experiment report: {result['report_path']}")
+        for profile in result["profiles"]:
+            print(
+                f"{profile['profile']}\tthread={profile['thread_id']}\t"
+                f"trace={profile['trace_path']}\tstatus={profile['status']}"
+            )
+        return
 
 def _input_line(prompt: str) -> str:
     try:
@@ -1096,7 +1203,48 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--run-id", default="", help="Stable run id to attach to trace and manifest.")
     sp.add_argument("--json-repair-steps", type=int, default=1, help="Retry invalid JSON runtime outputs up to N times.")
     sp.add_argument("--queue-writes", action="store_true", help="Queue scratchpad.add_note writes for review instead of saving immediately.")
+    sp.add_argument("--policy", choices=sorted(ACTION_POLICIES), default="balanced", help="Named scratchpad action policy.")
     sp.set_defaults(func=cmd_chat)
+
+    sp = sub.add_parser("trace", help="Inspect chat/smoke/experiment trace JSONL.")
+    trace_sub = sp.add_subparsers(dest="trace_cmd", required=True)
+
+    sp2 = trace_sub.add_parser("summary", help="Print a trace summary report.")
+    sp2.add_argument("trace")
+    sp2.add_argument("--json", action="store_true")
+    sp2.set_defaults(func=cmd_trace)
+
+    sp2 = trace_sub.add_parser("show", help="Show raw trace events.")
+    sp2.add_argument("trace")
+    sp2.add_argument("--step", type=int, default=None, help="Only show events for one tool step.")
+    sp2.add_argument("--line", type=int, default=None, help="Only show one JSONL line.")
+    sp2.set_defaults(func=cmd_trace)
+
+    sp2 = trace_sub.add_parser("report", help="Write or print a Markdown trace report.")
+    sp2.add_argument("trace")
+    sp2.add_argument("--title", default="Great Scratchpad Trace Report")
+    sp2.add_argument("--out", default=None)
+    sp2.set_defaults(func=cmd_trace)
+
+    sp = sub.add_parser("experiment", help="Run repeatable scratchpad scenarios across profiles.")
+    experiment_sub = sp.add_subparsers(dest="experiment_cmd", required=True)
+
+    sp2 = experiment_sub.add_parser("run", help="Run a Markdown scenario across LLM profiles.")
+    sp2.add_argument("scenario")
+    sp2.add_argument("--profiles", required=True, help="Comma-separated LLM profile names.")
+    sp2.add_argument("--llm-config", default=None, help="Path to llm.json. Default: ROOT/llm.json")
+    sp2.add_argument("--out-dir", default=None, help="Directory for traces and reports. Default: ROOT/runs/SCENARIO")
+    sp2.add_argument("--thread-prefix", default="experiment", help="Prefix for generated scratchpad thread ids.")
+    sp2.add_argument("--policy", choices=sorted(ACTION_POLICIES), default="balanced", help="Named scratchpad action policy.")
+    sp2.add_argument("--queue-writes", action="store_true", help="Queue scratchpad.add_note writes for review instead of saving immediately.")
+    sp2.add_argument("--yes", action="store_true", help="Allow runtime write actions without prompting.")
+    sp2.add_argument("--max-steps", type=int, default=4, help="Maximum scratchpad action steps per turn.")
+    sp2.add_argument("--recent", type=int, default=4, help="Recent scratchpad turns included in each prompt.")
+    sp2.add_argument("--max-tool-chars", type=int, default=6000, help="Maximum chars returned from each scratchpad action.")
+    sp2.add_argument("--json-repair-steps", type=int, default=1, help="Retry invalid JSON runtime outputs up to N times.")
+    sp2.add_argument("--quiet", action="store_true", help="Do not print tool action progress.")
+    sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")
+    sp2.set_defaults(func=cmd_experiment)
 
     sp = sub.add_parser("review", help="Review queued scratchpad write requests.")
     review_sub = sp.add_subparsers(dest="review_cmd", required=True)
@@ -1104,11 +1252,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp2 = review_sub.add_parser("list", help="List queued write requests.")
     sp2.add_argument("thread", nargs="?", default=None)
     sp2.add_argument("--status", default="pending", help="Filter by status. Use empty string to show all.")
+    sp2.add_argument("--audit", action="store_true", help="Show audit preview status for each item.")
+    sp2.set_defaults(func=cmd_review)
+
+    sp2 = review_sub.add_parser("show", help="Show one queued write request with audit preview.")
+    sp2.add_argument("thread")
+    sp2.add_argument("item")
+    sp2.add_argument("--json", action="store_true")
     sp2.set_defaults(func=cmd_review)
 
     sp2 = review_sub.add_parser("apply", help="Apply one queued write request as a note turn.")
     sp2.add_argument("thread")
-    sp2.add_argument("item")
+    sp2.add_argument("item", nargs="?")
+    sp2.add_argument("--audit-preview", action="store_true", help="Print audit preview without applying.")
+    sp2.add_argument("--all-safe", action="store_true", help="Apply all pending items whose audit preview is safe.")
     sp2.set_defaults(func=cmd_review)
 
     sp2 = review_sub.add_parser("edit", help="Edit one pending queued write request before applying it.")
