@@ -482,6 +482,14 @@ def cmd_review(args: argparse.Namespace) -> None:
         return
 
     if args.review_cmd == "apply":
+        if args.audit_preview:
+            if args.all_safe:
+                raise SystemExit("--audit-preview cannot be combined with --all-safe.")
+            if not args.item:
+                raise SystemExit("Provide ITEM for --audit-preview.")
+            item, item_path = load_review_item(root, args.thread, args.item)
+            print(render_review_item(item_path, item, include_audit=True), end="")
+            return
         if args.all_safe:
             applied = apply_safe_review_items(root, args.thread)
             if not applied:
@@ -496,10 +504,6 @@ def cmd_review(args: argparse.Namespace) -> None:
             return
         if not args.item:
             raise SystemExit("Provide ITEM or use --all-safe.")
-        if args.audit_preview:
-            item, item_path = load_review_item(root, args.thread, args.item)
-            print(render_review_item(item_path, item, include_audit=True), end="")
-            return
         turn_no, turn_path, item_path = apply_review_item(root, args.thread, args.item)
         print(f"Applied review item {item_path.name} as turn {turn_no:06d}: {turn_path}")
         return
