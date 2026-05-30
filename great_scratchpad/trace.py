@@ -74,10 +74,14 @@ def trace_report_data(events: list[dict]) -> dict:
         if event.get("event") == "tool_observation"
         and "queued for review" in str(event.get("observation", ""))
     ]
-    writes = [
+    add_note_actions = [
         event for event in events
         if event.get("event") == "tool_observation"
         and "scratchpad.add_note" in str(event.get("action", ""))
+    ]
+    durable_writes = [
+        event for event in add_note_actions
+        if "scratchpad.add_note wrote turn" in str(event.get("observation", ""))
     ]
     return {
         "run_ids": run_ids,
@@ -87,7 +91,8 @@ def trace_report_data(events: list[dict]) -> dict:
         "actions": actions,
         "json_repairs": trace_repairs(events),
         "queued_writes": len(queued),
-        "write_actions": len(writes),
+        "add_note_actions": len(add_note_actions),
+        "durable_writes": len(durable_writes),
         "final_messages": finals,
     }
 
@@ -103,7 +108,8 @@ def trace_report_markdown(events: list[dict], title: str = "Great Scratchpad Tra
         f"- Models: {', '.join(data['models']) or '(none)'}",
         f"- Events: {sum(data['summary']['event_counts'].values())}",
         f"- JSON repairs: {data['json_repairs']}",
-        f"- Write actions: {data['write_actions']}",
+        f"- Add-note actions: {data['add_note_actions']}",
+        f"- Durable writes: {data['durable_writes']}",
         f"- Queued writes: {data['queued_writes']}",
         "",
         "## Event Counts",

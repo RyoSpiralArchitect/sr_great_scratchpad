@@ -84,7 +84,14 @@ def review_item_path(root: Path, thread_id: str, item_id: str) -> Path:
         item_id += ".json"
     return review_queue_dir(root, thread_id) / item_id
 
-def queue_add_note(root: Path, thread_id: str, action_obj: dict) -> Path:
+def queue_add_note(
+    root: Path,
+    thread_id: str,
+    action_obj: dict,
+    source_kind: str = "manual",
+    source_user_text: str = "",
+    source_observations: list[str] | None = None,
+) -> Path:
     ensure_root(root)
     ensure_thread(root, thread_id)
     qdir = review_queue_dir(root, thread_id)
@@ -103,6 +110,11 @@ def queue_add_note(root: Path, thread_id: str, action_obj: dict) -> Path:
         "assumptions": str(action_obj.get("assumptions", "")),
         "open_questions": str(action_obj.get("open_questions", "")),
         "drift_risks": str(action_obj.get("drift_risks", "")),
+        "source": {
+            "kind": source_kind,
+            "user_text": source_user_text,
+            "observations": list(source_observations or []),
+        },
     }
     path = qdir / item_id
     path.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -163,6 +175,20 @@ def render_review_item(path: Path, item: dict, include_audit: bool = True) -> st
         f"- Drift risks: {inline_field(str(item.get('drift_risks', '')))}",
         "",
     ]
+    source = item.get("source")
+    if isinstance(source, dict):
+        observations = source.get("observations", [])
+        observation_count = len(observations) if isinstance(observations, list) else 0
+        lines.extend(
+            [
+                "## Source",
+                "",
+                f"- Kind: {inline_field(str(source.get('kind', '')), '(unknown)')}",
+                f"- User text: {inline_field(str(source.get('user_text', '')))}",
+                f"- Observation count: {observation_count}",
+                "",
+            ]
+        )
     if include_audit:
         audit = audit_review_item(item, path)
         lines.extend(

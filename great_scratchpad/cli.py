@@ -504,6 +504,14 @@ def cmd_review(args: argparse.Namespace) -> None:
             return
         if not args.item:
             raise SystemExit("Provide ITEM or use --all-safe.")
+        if args.safe_only:
+            item, item_path = load_review_item(root, args.thread, args.item)
+            audit = audit_review_item(item, item_path)
+            if not review_item_is_safe(item, audit):
+                raise SystemExit(
+                    f"Review item is not safe to apply: {item_path.name} "
+                    f"(audit={audit.get('status')}, ratio={audit.get('ratio')})"
+                )
         turn_no, turn_path, item_path = apply_review_item(root, args.thread, args.item)
         print(f"Applied review item {item_path.name} as turn {turn_no:06d}: {turn_path}")
         return
@@ -1266,6 +1274,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.add_argument("item", nargs="?")
     sp2.add_argument("--audit-preview", action="store_true", help="Print audit preview without applying.")
     sp2.add_argument("--all-safe", action="store_true", help="Apply all pending items whose audit preview is safe.")
+    sp2.add_argument("--safe-only", action="store_true", help="Apply one item only if its audit preview is safe.")
     sp2.set_defaults(func=cmd_review)
 
     sp2 = review_sub.add_parser("edit", help="Edit one pending queued write request before applying it.")

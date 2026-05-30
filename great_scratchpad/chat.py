@@ -124,6 +124,8 @@ def run_scratchpad_action(
     yes: bool = False,
     max_tool_chars: int = 6000,
     queue_writes: bool = False,
+    source_user_text: str = "",
+    source_observations: list[str] | None = None,
 ) -> str:
     action = str(action_obj.get("action", "")).strip()
 
@@ -177,7 +179,14 @@ def run_scratchpad_action(
             if not raw:
                 return "scratchpad.add_note failed: missing text"
             if queue_writes:
-                path = queue_add_note(root, thread_id, action_obj)
+                path = queue_add_note(
+                    root,
+                    thread_id,
+                    action_obj,
+                    source_kind="chat_runtime",
+                    source_user_text=source_user_text,
+                    source_observations=source_observations,
+                )
                 return f"scratchpad.add_note queued for review: {path.relative_to(root)}"
             if not maybe_confirm_write("Allow scratchpad.add_note write?", yes):
                 return "scratchpad.add_note skipped: write was not confirmed"
@@ -366,6 +375,8 @@ def run_chat_turn(
                 yes=yes,
                 max_tool_chars=max_tool_chars,
                 queue_writes=queue_writes,
+                source_user_text=user_text,
+                source_observations=observations,
             )
         tool_steps += 1
         record_trace(

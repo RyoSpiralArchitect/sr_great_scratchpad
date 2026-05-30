@@ -230,6 +230,8 @@ review queue:
 ```bash
 python3 -S sr_great_scratchpad.py review list monday-meawness --audit
 python3 -S sr_great_scratchpad.py review show monday-meawness ITEM.json
+python3 -S sr_great_scratchpad.py review apply monday-meawness ITEM.json --audit-preview
+python3 -S sr_great_scratchpad.py review apply monday-meawness ITEM.json --safe-only
 python3 -S sr_great_scratchpad.py review apply monday-meawness --all-safe
 ```
 

@@ -589,6 +589,11 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 1)
             items = gs.iter_review_items(root, "t")
             self.assertEqual(len(items), 1)
+            queued_item = json.loads(items[0][0].read_text(encoding="utf-8"))
+            self.assertEqual(queued_item["source"]["kind"], "chat_runtime")
+            self.assertEqual(queued_item["source"]["user_text"], "queue write")
+            self.assertEqual(len(queued_item["source"]["observations"]), 1)
+            self.assertIn("scratchpad.search", queued_item["source"]["observations"][0])
             item_id = items[0][0].name
             edited, _edited_path = gs.edit_review_item(
                 root,
@@ -638,8 +643,12 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             report = gs.trace_report_markdown(loaded)
 
             self.assertEqual(data["run_ids"], ["trace-test"])
+            self.assertEqual(data["add_note_actions"], 1)
+            self.assertEqual(data["durable_writes"], 0)
             self.assertEqual(data["queued_writes"], 1)
             self.assertIn("scratchpad.search", report)
+            self.assertIn("Add-note actions: 1", report)
+            self.assertIn("Durable writes: 0", report)
             self.assertIn("Queued writes: 1", report)
             self.assertIn('"event": "model_output"', gs.trace_show(loaded, line=2))
 
@@ -666,6 +675,7 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertTrue(gs.review_item_is_safe(item, audit))
             rendered = gs.render_review_item(item_path, item)
             self.assertIn("## Audit preview", rendered)
+            self.assertIn("## Source", rendered)
             applied = gs.apply_safe_review_items(root, "t")
 
             self.assertEqual(len(applied), 1)
@@ -702,6 +712,40 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
 
             item = json.loads(item_path.read_text(encoding="utf-8"))
             self.assertIn("## Audit preview", out.getvalue())
+            self.assertEqual(item["status"], "pending")
+            self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 0)
+
+    def test_review_apply_safe_only_rejects_unsafe_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            parser = gs.build_parser()
+            item_path = gs.queue_add_note(
+                root,
+                "t",
+                {
+                    "text": "short",
+                    "center": "unsafe item",
+                    "trajectory": "thin",
+                    "anchors": "unsupported anchor",
+                },
+            )
+
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "review",
+                    "apply",
+                    "t",
+                    item_path.name,
+                    "--safe-only",
+                ]
+            )
+            with self.assertRaises(SystemExit):
+                args.func(args)
+
+            item = json.loads(item_path.read_text(encoding="utf-8"))
             self.assertEqual(item["status"], "pending")
             self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 0)
 
