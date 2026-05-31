@@ -237,6 +237,48 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertEqual(tool_event["action"], "scratchpad.add_note")
             self.assertIn("wrote turn", tool_event["observation"])
 
+    def test_chat_allows_only_one_add_note_per_turn(self) -> None:
+        code = (
+            "import json,sys\n"
+            "p=sys.stdin.read()\n"
+            "if 'a memory write was already handled' in p:\n"
+            " print(json.dumps({'type':'final','message':'done'}))\n"
+            "else:\n"
+            " print(json.dumps({'type':'action','action':'scratchpad.add_note','text':'repeat note'}))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            cfg = {
+                "backend": "command",
+                "command": [sys.executable, "-S", "-c", code],
+                "timeout": 5,
+            }
+            events: list[dict] = []
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="write once",
+                history=[],
+                yes=True,
+                queue_writes=True,
+                verbose=False,
+                trace_events=events,
+            )
+
+            self.assertEqual(message, "done")
+            self.assertEqual(len(gs.iter_review_items(root, "t")), 1)
+            observations = [
+                event["observation"]
+                for event in events
+                if event["event"] == "tool_observation"
+            ]
+            self.assertIn("queued for review", observations[0])
+            self.assertIn("already handled", observations[1])
+
     def test_audit_short_raw_roomy_annotation_is_not_overgrown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

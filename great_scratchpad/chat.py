@@ -231,6 +231,7 @@ def run_chat_turn(
     tool_steps = 0
     model_calls = 0
     repairs_used = 0
+    add_note_requests = 0
     record_trace(
         trace_events,
         "turn_start",
@@ -364,7 +365,12 @@ def run_chat_turn(
         action_name = str(obj.get("action", "")).strip()
         if verbose:
             print(f"[tool] {action_name}")
-        if policy == "read-only" and action_name == "scratchpad.add_note":
+        if action_name == "scratchpad.add_note" and add_note_requests > 0:
+            observation = (
+                "scratchpad.add_note skipped: a memory write was already handled "
+                "in this chat turn. Return a final answer next."
+            )
+        elif policy == "read-only" and action_name == "scratchpad.add_note":
             observation = "scratchpad.add_note blocked: read-only policy is active"
         else:
             observation = run_scratchpad_action(
@@ -378,6 +384,8 @@ def run_chat_turn(
                 source_user_text=user_text,
                 source_observations=observations,
             )
+        if action_name == "scratchpad.add_note":
+            add_note_requests += 1
         tool_steps += 1
         record_trace(
             trace_events,
