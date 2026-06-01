@@ -15,7 +15,7 @@ from .llm import call_llm_result, draft_annotation, extract_json_object, llm_con
 from .memory import add_turn, apply_review_item, apply_safe_review_items, audit_review_item, build_context_pack, compact_one_range, edit_review_item, iter_review_items, load_review_item, recent_turn_files, reject_review_item, render_audit, render_recent_turns, render_review_item, retrieve, review_item_is_safe
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
-from .trace import load_trace_events, trace_report_data, trace_report_markdown, trace_show
+from .trace import load_trace_events, trace_centerline, trace_centerline_markdown, trace_report_data, trace_report_markdown, trace_show
 
 REPL_HELP = """Great Scratchpad REPL commands:
 
@@ -504,6 +504,14 @@ def cmd_review(args: argparse.Namespace) -> None:
             return
         if not args.item:
             raise SystemExit("Provide ITEM or use --all-safe.")
+        if args.safe_only:
+            item, item_path = load_review_item(root, args.thread, args.item)
+            audit = audit_review_item(item, item_path)
+            if not review_item_is_safe(item, audit):
+                raise SystemExit(
+                    f"Review item is not safe to apply: {item_path.name} "
+                    f"(audit={audit.get('status')}, ratio={audit.get('ratio')})"
+                )
         turn_no, turn_path, item_path = apply_review_item(root, args.thread, args.item)
         print(f"Applied review item {item_path.name} as turn {turn_no:06d}: {turn_path}")
         return
@@ -688,6 +696,13 @@ def cmd_trace(args: argparse.Namespace) -> None:
             print(f"Wrote trace report: {args.out}")
         else:
             print(report, end="")
+        return
+
+    if args.trace_cmd == "centerline":
+        if args.json:
+            print(json.dumps({"centerline": trace_centerline(events)}, ensure_ascii=False, indent=2))
+        else:
+            print(trace_centerline_markdown(events, max_turns=args.max_turns), end="")
         return
 
 def cmd_experiment(args: argparse.Namespace) -> None:
@@ -1226,6 +1241,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.add_argument("--out", default=None)
     sp2.set_defaults(func=cmd_trace)
 
+    sp2 = trace_sub.add_parser("centerline", help="Show turn-level center pin and drift hints.")
+    sp2.add_argument("trace")
+    sp2.add_argument("--json", action="store_true")
+    sp2.add_argument("--max-turns", type=int, default=24)
+    sp2.set_defaults(func=cmd_trace)
+
     sp = sub.add_parser("experiment", help="Run repeatable scratchpad scenarios across profiles.")
     experiment_sub = sp.add_subparsers(dest="experiment_cmd", required=True)
 
@@ -1266,6 +1287,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.add_argument("item", nargs="?")
     sp2.add_argument("--audit-preview", action="store_true", help="Print audit preview without applying.")
     sp2.add_argument("--all-safe", action="store_true", help="Apply all pending items whose audit preview is safe.")
+    sp2.add_argument("--safe-only", action="store_true", help="Apply one item only if its audit preview is safe.")
     sp2.set_defaults(func=cmd_review)
 
     sp2 = review_sub.add_parser("edit", help="Edit one pending queued write request before applying it.")

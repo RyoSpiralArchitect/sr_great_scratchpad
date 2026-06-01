@@ -237,6 +237,103 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertEqual(tool_event["action"], "scratchpad.add_note")
             self.assertIn("wrote turn", tool_event["observation"])
 
+    def test_chat_allows_only_one_add_note_per_turn(self) -> None:
+        code = (
+            "import json,sys\n"
+            "p=sys.stdin.read()\n"
+            "if 'a memory write was already handled' in p:\n"
+            " print(json.dumps({'type':'final','message':'done'}))\n"
+            "else:\n"
+            " print(json.dumps({'type':'action','action':'scratchpad.add_note','text':'repeat note'}))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            cfg = {
+                "backend": "command",
+                "command": [sys.executable, "-S", "-c", code],
+                "timeout": 5,
+            }
+            events: list[dict] = []
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="write once",
+                history=[],
+                yes=True,
+                queue_writes=True,
+                verbose=False,
+                trace_events=events,
+            )
+
+            self.assertEqual(message, "done")
+            self.assertEqual(len(gs.iter_review_items(root, "t")), 1)
+            observations = [
+                event["observation"]
+                for event in events
+                if event["event"] == "tool_observation"
+            ]
+            self.assertIn("queued for review", observations[0])
+            self.assertIn("already handled", observations[1])
+
+    def test_chat_injects_centerline_hints_and_traces_them(self) -> None:
+        code = (
+            "import json,sys\n"
+            "p=sys.stdin.read()\n"
+            "seen = 'Centerline hints:' in p and 'should_checkpoint: True' in p\n"
+            "msg = 'checkpoint seen' if seen else 'missing checkpoint'\n"
+            "print(json.dumps({'type':'final','message':msg}))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            cfg = {
+                "backend": "command",
+                "command": [sys.executable, "-S", "-c", code],
+                "timeout": 5,
+            }
+            history = [
+                {"role": "user", "content": "クラゲの神経叢は分散型なの？"},
+                {"role": "assistant", "content": "脳ではなく神経叢で反応します。"},
+                {"role": "user", "content": "そういえば味噌も地域に分散しているね。"},
+                {"role": "assistant", "content": "地域ごとに違いがあります。"},
+            ]
+            events: list[dict] = []
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="てことは結局なんなんだろう？",
+                history=history,
+                verbose=False,
+                trace_events=events,
+            )
+
+            self.assertEqual(message, "checkpoint seen")
+            centerline = next(event for event in events if event["event"] == "centerline")
+            self.assertIn("checkpoint", centerline["flags"])
+            self.assertTrue(centerline["should_checkpoint"])
+            self.assertTrue(centerline["should_queue_note"])
+            self.assertIn("distributed systems / analogy fit", centerline["active_centers"])
+
+    def test_centerline_marks_ambiguous_short_question(self) -> None:
+        analysis = gs.analyze_centerline(
+            "あんかけは？",
+            [
+                {"role": "user", "content": "モーニングの発祥は名古屋ではないそうだね？"},
+                {"role": "assistant", "content": "発祥には諸説あります。"},
+            ],
+        )
+
+        self.assertIn("ambiguous_short_question", analysis["flags"])
+        self.assertTrue(analysis["should_clarify"])
+        self.assertFalse(analysis["should_checkpoint"])
+
     def test_audit_short_raw_roomy_annotation_is_not_overgrown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -589,6 +686,11 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 1)
             items = gs.iter_review_items(root, "t")
             self.assertEqual(len(items), 1)
+            queued_item = json.loads(items[0][0].read_text(encoding="utf-8"))
+            self.assertEqual(queued_item["source"]["kind"], "chat_runtime")
+            self.assertEqual(queued_item["source"]["user_text"], "queue write")
+            self.assertEqual(len(queued_item["source"]["observations"]), 1)
+            self.assertIn("scratchpad.search", queued_item["source"]["observations"][0])
             item_id = items[0][0].name
             edited, _edited_path = gs.edit_review_item(
                 root,
@@ -638,10 +740,37 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             report = gs.trace_report_markdown(loaded)
 
             self.assertEqual(data["run_ids"], ["trace-test"])
+            self.assertEqual(data["add_note_actions"], 1)
+            self.assertEqual(data["durable_writes"], 0)
             self.assertEqual(data["queued_writes"], 1)
             self.assertIn("scratchpad.search", report)
+            self.assertIn("Add-note actions: 1", report)
+            self.assertIn("Durable writes: 0", report)
             self.assertIn("Queued writes: 1", report)
             self.assertIn('"event": "model_output"', gs.trace_show(loaded, line=2))
+
+    def test_trace_centerline_report_handles_legacy_trace(self) -> None:
+        events = [
+            {"event": "turn_start", "run_id": "r", "user_text": "クラゲは脳みそがないの？"},
+            {"event": "final", "run_id": "r", "message": "神経叢があります。", "tool_steps": 0},
+            {"event": "turn_start", "run_id": "r", "user_text": "そういえば味噌も分散しているね。"},
+            {"event": "final", "run_id": "r", "message": "地域ごとの差があります。", "tool_steps": 0},
+            {"event": "turn_start", "run_id": "r", "user_text": "あんかけは？"},
+            {"event": "final", "run_id": "r", "message": "とろみのあるあんです。", "tool_steps": 0},
+            {"event": "turn_start", "run_id": "r", "user_text": "てことは結局なんなんだろう？"},
+            {"event": "final", "run_id": "r", "message": "まとめです。", "tool_steps": 0},
+        ]
+
+        data = gs.trace_report_data(events)
+        report = gs.trace_report_markdown(events)
+        centerline = gs.trace_centerline_markdown(events)
+
+        self.assertEqual(data["centerline_summary"]["turns"], 4)
+        self.assertGreaterEqual(data["centerline_summary"]["checkpoints"], 1)
+        self.assertIn("## Centerline", report)
+        self.assertIn("center_shift", centerline)
+        self.assertIn("ambiguous_short_question", centerline)
+        self.assertIn("checkpoint", centerline)
 
     def test_review_show_and_apply_all_safe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -666,6 +795,7 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertTrue(gs.review_item_is_safe(item, audit))
             rendered = gs.render_review_item(item_path, item)
             self.assertIn("## Audit preview", rendered)
+            self.assertIn("## Source", rendered)
             applied = gs.apply_safe_review_items(root, "t")
 
             self.assertEqual(len(applied), 1)
@@ -705,6 +835,40 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertEqual(item["status"], "pending")
             self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 0)
 
+    def test_review_apply_safe_only_rejects_unsafe_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            parser = gs.build_parser()
+            item_path = gs.queue_add_note(
+                root,
+                "t",
+                {
+                    "text": "short",
+                    "center": "unsafe item",
+                    "trajectory": "thin",
+                    "anchors": "unsupported anchor",
+                },
+            )
+
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "review",
+                    "apply",
+                    "t",
+                    item_path.name,
+                    "--safe-only",
+                ]
+            )
+            with self.assertRaises(SystemExit):
+                args.func(args)
+
+            item = json.loads(item_path.read_text(encoding="utf-8"))
+            self.assertEqual(item["status"], "pending")
+            self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 0)
+
     def test_read_only_policy_blocks_add_note(self) -> None:
         code = (
             "import json,sys\n"
@@ -739,7 +903,8 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
 
             self.assertEqual(message, "blocked observed")
             self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 0)
-            self.assertIn("read-only policy", events[2]["observation"])
+            tool_event = next(event for event in events if event["event"] == "tool_observation")
+            self.assertIn("read-only policy", tool_event["observation"])
 
     def test_experiment_run_writes_profile_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

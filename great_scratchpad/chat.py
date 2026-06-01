@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 import time
 
+from .centerline import analyze_centerline, render_centerline_hints
 from .constants import CHAT_PROMPT_TEMPLATE, chat_runtime_system
 from .llm import call_llm_result, extract_json_object, llm_config_metadata
 from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_recent_turns, render_search_results
@@ -38,12 +39,14 @@ def build_chat_prompt(
     recent_context: str,
     history: list[dict[str, str]],
     observations: list[str],
+    centerline_hints: str,
     history_chars: int = 4000,
 ) -> str:
     return CHAT_PROMPT_TEMPLATE.format(
         thread_id=thread_id,
         recent_context=recent_context,
         history=chat_history_text(history, history_chars),
+        centerline_hints=centerline_hints,
         user_text=user_text.strip(),
         observations="\n\n".join(observations).strip() or "(none yet)",
     )
@@ -124,6 +127,8 @@ def run_scratchpad_action(
     yes: bool = False,
     max_tool_chars: int = 6000,
     queue_writes: bool = False,
+    source_user_text: str = "",
+    source_observations: list[str] | None = None,
 ) -> str:
     action = str(action_obj.get("action", "")).strip()
 
@@ -177,7 +182,14 @@ def run_scratchpad_action(
             if not raw:
                 return "scratchpad.add_note failed: missing text"
             if queue_writes:
-                path = queue_add_note(root, thread_id, action_obj)
+                path = queue_add_note(
+                    root,
+                    thread_id,
+                    action_obj,
+                    source_kind="chat_runtime",
+                    source_user_text=source_user_text,
+                    source_observations=source_observations,
+                )
                 return f"scratchpad.add_note queued for review: {path.relative_to(root)}"
             if not maybe_confirm_write("Allow scratchpad.add_note write?", yes):
                 return "scratchpad.add_note skipped: write was not confirmed"
@@ -222,6 +234,9 @@ def run_chat_turn(
     tool_steps = 0
     model_calls = 0
     repairs_used = 0
+    add_note_requests = 0
+    centerline = analyze_centerline(user_text, history)
+    centerline_hints = render_centerline_hints(centerline)
     record_trace(
         trace_events,
         "turn_start",
@@ -234,6 +249,13 @@ def run_chat_turn(
         policy=policy,
         llm=llm_config_metadata(cfg),
     )
+    record_trace(
+        trace_events,
+        "centerline",
+        thread_id=thread_id,
+        user_text=user_text,
+        **centerline,
+    )
     runtime_system = chat_runtime_system(policy)
 
     while True:
@@ -243,6 +265,7 @@ def run_chat_turn(
             recent_context=recent_context,
             history=history,
             observations=observations,
+            centerline_hints=centerline_hints,
         )
         try:
             result = call_llm_result(cfg, prompt, runtime_system)
@@ -355,7 +378,12 @@ def run_chat_turn(
         action_name = str(obj.get("action", "")).strip()
         if verbose:
             print(f"[tool] {action_name}")
-        if policy == "read-only" and action_name == "scratchpad.add_note":
+        if action_name == "scratchpad.add_note" and add_note_requests > 0:
+            observation = (
+                "scratchpad.add_note skipped: a memory write was already handled "
+                "in this chat turn. Return a final answer next."
+            )
+        elif policy == "read-only" and action_name == "scratchpad.add_note":
             observation = "scratchpad.add_note blocked: read-only policy is active"
         else:
             observation = run_scratchpad_action(
@@ -366,7 +394,11 @@ def run_chat_turn(
                 yes=yes,
                 max_tool_chars=max_tool_chars,
                 queue_writes=queue_writes,
+                source_user_text=user_text,
+                source_observations=observations,
             )
+        if action_name == "scratchpad.add_note":
+            add_note_requests += 1
         tool_steps += 1
         record_trace(
             trace_events,
