@@ -15,7 +15,7 @@ from .llm import call_llm_result, draft_annotation, extract_json_object, llm_con
 from .memory import add_turn, apply_review_item, apply_safe_review_items, audit_review_item, build_context_pack, compact_one_range, edit_review_item, iter_review_items, load_review_item, recent_turn_files, reject_review_item, render_audit, render_recent_turns, render_review_item, retrieve, review_item_is_safe
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
-from .trace import load_trace_events, trace_report_data, trace_report_markdown, trace_show
+from .trace import load_trace_events, trace_centerline, trace_centerline_markdown, trace_report_data, trace_report_markdown, trace_show
 
 REPL_HELP = """Great Scratchpad REPL commands:
 
@@ -698,6 +698,13 @@ def cmd_trace(args: argparse.Namespace) -> None:
             print(report, end="")
         return
 
+    if args.trace_cmd == "centerline":
+        if args.json:
+            print(json.dumps({"centerline": trace_centerline(events)}, ensure_ascii=False, indent=2))
+        else:
+            print(trace_centerline_markdown(events, max_turns=args.max_turns), end="")
+        return
+
 def cmd_experiment(args: argparse.Namespace) -> None:
     root = root_path(args)
     ensure_root(root)
@@ -1232,6 +1239,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.add_argument("trace")
     sp2.add_argument("--title", default="Great Scratchpad Trace Report")
     sp2.add_argument("--out", default=None)
+    sp2.set_defaults(func=cmd_trace)
+
+    sp2 = trace_sub.add_parser("centerline", help="Show turn-level center pin and drift hints.")
+    sp2.add_argument("trace")
+    sp2.add_argument("--json", action="store_true")
+    sp2.add_argument("--max-turns", type=int, default=24)
     sp2.set_defaults(func=cmd_trace)
 
     sp = sub.add_parser("experiment", help="Run repeatable scratchpad scenarios across profiles.")

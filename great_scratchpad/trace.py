@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .centerline import analyze_centerline
 from .experiments import trace_summary
 from .text import limit_text
 
@@ -49,10 +50,88 @@ def trace_finals(events: list[dict]) -> list[str]:
 def trace_repairs(events: list[dict]) -> int:
     return sum(1 for event in events if event.get("event") == "json_parse_error")
 
+def _centerline_from_event(event: dict) -> dict:
+    keys = (
+        "flags",
+        "active_centers",
+        "terms",
+        "should_checkpoint",
+        "should_clarify",
+        "should_queue_note",
+        "guidance",
+    )
+    return {key: event.get(key) for key in keys if key in event}
+
+def trace_centerline(events: list[dict]) -> list[dict]:
+    turns: list[dict] = []
+    history: list[dict[str, str]] = []
+    current: dict | None = None
+
+    for event in events:
+        name = event.get("event")
+        if name == "turn_start":
+            user_text = str(event.get("user_text", ""))
+            analysis = analyze_centerline(user_text, history)
+            current = {
+                "turn": len(turns) + 1,
+                "line": event.get("_line"),
+                "user_text": user_text,
+                "analysis": analysis,
+                "final": "",
+                "tool_steps": 0,
+            }
+            turns.append(current)
+            continue
+        if name == "centerline" and current is not None:
+            event_analysis = _centerline_from_event(event)
+            if event_analysis:
+                current["analysis"] = event_analysis
+            continue
+        if name == "model_output" and current is not None:
+            llm = event.get("llm")
+            if isinstance(llm, dict):
+                current["prompt_chars"] = llm.get("prompt_chars")
+                current["usage"] = llm.get("usage", {})
+            continue
+        if name == "final" and current is not None:
+            final = str(event.get("message", ""))
+            current["final"] = final
+            current["tool_steps"] = event.get("tool_steps", 0)
+            history.extend(
+                [
+                    {"role": "user", "content": str(current.get("user_text", ""))},
+                    {"role": "assistant", "content": final},
+                ]
+            )
+
+    return turns
+
+def trace_centerline_summary(turns: list[dict]) -> dict:
+    counts = {
+        "turns": len(turns),
+        "flagged_turns": 0,
+        "checkpoints": 0,
+        "clarifications": 0,
+        "queued_note_candidates": 0,
+    }
+    for turn in turns:
+        analysis = turn.get("analysis") or {}
+        flags = analysis.get("flags") or []
+        if flags:
+            counts["flagged_turns"] += 1
+        if analysis.get("should_checkpoint"):
+            counts["checkpoints"] += 1
+        if analysis.get("should_clarify"):
+            counts["clarifications"] += 1
+        if analysis.get("should_queue_note"):
+            counts["queued_note_candidates"] += 1
+    return counts
+
 def trace_report_data(events: list[dict]) -> dict:
     summary = trace_summary(events)
     actions = trace_actions(events)
     finals = trace_finals(events)
+    centerline = trace_centerline(events)
     run_ids = sorted({str(event.get("run_id", "")) for event in events if event.get("run_id")})
     profiles = sorted(
         {
@@ -94,7 +173,58 @@ def trace_report_data(events: list[dict]) -> dict:
         "add_note_actions": len(add_note_actions),
         "durable_writes": len(durable_writes),
         "final_messages": finals,
+        "centerline": centerline,
+        "centerline_summary": trace_centerline_summary(centerline),
     }
+
+def trace_centerline_markdown(events: list[dict], max_turns: int = 24) -> str:
+    turns = trace_centerline(events)
+    summary = trace_centerline_summary(turns)
+    lines = [
+        "## Centerline",
+        "",
+        f"- Turns: {summary['turns']}",
+        f"- Flagged turns: {summary['flagged_turns']}",
+        f"- Checkpoints: {summary['checkpoints']}",
+        f"- Clarification candidates: {summary['clarifications']}",
+        f"- Queued-note candidates: {summary['queued_note_candidates']}",
+        "",
+    ]
+    flagged = [
+        turn for turn in turns
+        if (turn.get("analysis") or {}).get("flags")
+        or (turn.get("analysis") or {}).get("should_checkpoint")
+        or (turn.get("analysis") or {}).get("should_clarify")
+        or (turn.get("analysis") or {}).get("should_queue_note")
+    ]
+    if not flagged:
+        lines.append("(no centerline flags)")
+        return "\n".join(lines).strip() + "\n"
+
+    for turn in flagged[:max_turns]:
+        analysis = turn.get("analysis") or {}
+        flags = analysis.get("flags") or []
+        active_centers = analysis.get("active_centers") or []
+        guidance = analysis.get("guidance") or []
+        user_text = str(turn.get("user_text", "")).replace("\n", " ")
+        lines.extend(
+            [
+                f"### Turn {turn.get('turn')}",
+                "",
+                f"- Flags: {', '.join(flags) if flags else '(none)'}",
+                f"- Active centers: {', '.join(active_centers) if active_centers else '(unknown)'}",
+                f"- Tool steps: {turn.get('tool_steps', 0)}",
+                f"- User: {limit_text(user_text, 240)}",
+            ]
+        )
+        if guidance:
+            lines.append("- Guidance: " + " ".join(str(item) for item in guidance))
+        lines.append("")
+
+    if len(flagged) > max_turns:
+        lines.append(f"... {len(flagged) - max_turns} more flagged turn(s) omitted.")
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
 
 def trace_report_markdown(events: list[dict], title: str = "Great Scratchpad Trace Report") -> str:
     data = trace_report_data(events)
@@ -139,6 +269,8 @@ def trace_report_markdown(events: list[dict], title: str = "Great Scratchpad Tra
             lines.append(f"{i}. {action.get('action')} step={action.get('tool_step')}{query}")
     else:
         lines.append("(none)")
+
+    lines.extend(["", trace_centerline_markdown(events).strip(), ""])
 
     lines.extend(["", "## Final Messages", ""])
     if data["final_messages"]:

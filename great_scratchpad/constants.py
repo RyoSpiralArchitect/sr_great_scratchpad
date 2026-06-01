@@ -123,13 +123,16 @@ Rules:
 - Use scratchpad tools when memory would help keep the topic centered.
 - Do not invent memory. Use retrieved source paths when relying on scratchpad material.
 - scratchpad.add_note should store externally visible trajectory notes, not hidden reasoning.
+- When centerline hints mark checkpoint, separate the active centers before summarizing; do not blend unrelated threads into one forced conclusion.
+- When centerline hints mark an ambiguous short question, ask a brief clarification if the referent is unclear.
+- Under writer policy, use scratchpad.add_note when a user correction, analogy mismatch, or center shift creates a reusable trajectory anchor.
 - Never reveal hidden chain-of-thought. Concise rationale is okay when useful.
 """
 ACTION_POLICIES = {
     "balanced": "Use scratchpad tools when they materially improve continuity. Prefer search or recent before pack. Queue or ask before writing notes.",
     "conservative": "Prefer answering from current context and recent scratchpad first. Search only when the user references prior thread context or the center pin is ambiguous. Avoid writing notes unless explicitly useful.",
     "active": "Actively search when a message references prior concepts, coined terms, topic drift, or unresolved questions. Use pack when a single search result is too thin.",
-    "writer": "Use search/recent for grounding, and draft scratchpad.add_note when the current turn creates a reusable trajectory anchor. Keep writes concise and externally visible.",
+    "writer": "Use search/recent for grounding, and draft scratchpad.add_note when the current turn creates a reusable trajectory anchor, especially user corrections, analogy mismatches, center shifts, or checkpoint moments. Keep writes concise and externally visible.",
     "read-only": "Use only scratchpad.search, scratchpad.recent, scratchpad.pack, and scratchpad.audit. Do not call scratchpad.add_note.",
 }
 
@@ -153,6 +156,11 @@ Recent scratchpad context:
 Conversation so far in this runtime:
 ---
 {history}
+---
+
+Centerline hints:
+---
+{centerline_hints}
 ---
 
 Current user message:

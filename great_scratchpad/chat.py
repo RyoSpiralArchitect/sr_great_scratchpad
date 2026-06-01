@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 import time
 
+from .centerline import analyze_centerline, render_centerline_hints
 from .constants import CHAT_PROMPT_TEMPLATE, chat_runtime_system
 from .llm import call_llm_result, extract_json_object, llm_config_metadata
 from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_recent_turns, render_search_results
@@ -38,12 +39,14 @@ def build_chat_prompt(
     recent_context: str,
     history: list[dict[str, str]],
     observations: list[str],
+    centerline_hints: str,
     history_chars: int = 4000,
 ) -> str:
     return CHAT_PROMPT_TEMPLATE.format(
         thread_id=thread_id,
         recent_context=recent_context,
         history=chat_history_text(history, history_chars),
+        centerline_hints=centerline_hints,
         user_text=user_text.strip(),
         observations="\n\n".join(observations).strip() or "(none yet)",
     )
@@ -232,6 +235,8 @@ def run_chat_turn(
     model_calls = 0
     repairs_used = 0
     add_note_requests = 0
+    centerline = analyze_centerline(user_text, history)
+    centerline_hints = render_centerline_hints(centerline)
     record_trace(
         trace_events,
         "turn_start",
@@ -244,6 +249,13 @@ def run_chat_turn(
         policy=policy,
         llm=llm_config_metadata(cfg),
     )
+    record_trace(
+        trace_events,
+        "centerline",
+        thread_id=thread_id,
+        user_text=user_text,
+        **centerline,
+    )
     runtime_system = chat_runtime_system(policy)
 
     while True:
@@ -253,6 +265,7 @@ def run_chat_turn(
             recent_context=recent_context,
             history=history,
             observations=observations,
+            centerline_hints=centerline_hints,
         )
         try:
             result = call_llm_result(cfg, prompt, runtime_system)

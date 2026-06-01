@@ -279,6 +279,61 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertIn("queued for review", observations[0])
             self.assertIn("already handled", observations[1])
 
+    def test_chat_injects_centerline_hints_and_traces_them(self) -> None:
+        code = (
+            "import json,sys\n"
+            "p=sys.stdin.read()\n"
+            "seen = 'Centerline hints:' in p and 'should_checkpoint: True' in p\n"
+            "msg = 'checkpoint seen' if seen else 'missing checkpoint'\n"
+            "print(json.dumps({'type':'final','message':msg}))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            cfg = {
+                "backend": "command",
+                "command": [sys.executable, "-S", "-c", code],
+                "timeout": 5,
+            }
+            history = [
+                {"role": "user", "content": "クラゲの神経叢は分散型なの？"},
+                {"role": "assistant", "content": "脳ではなく神経叢で反応します。"},
+                {"role": "user", "content": "そういえば味噌も地域に分散しているね。"},
+                {"role": "assistant", "content": "地域ごとに違いがあります。"},
+            ]
+            events: list[dict] = []
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="てことは結局なんなんだろう？",
+                history=history,
+                verbose=False,
+                trace_events=events,
+            )
+
+            self.assertEqual(message, "checkpoint seen")
+            centerline = next(event for event in events if event["event"] == "centerline")
+            self.assertIn("checkpoint", centerline["flags"])
+            self.assertTrue(centerline["should_checkpoint"])
+            self.assertTrue(centerline["should_queue_note"])
+            self.assertIn("distributed systems / analogy fit", centerline["active_centers"])
+
+    def test_centerline_marks_ambiguous_short_question(self) -> None:
+        analysis = gs.analyze_centerline(
+            "あんかけは？",
+            [
+                {"role": "user", "content": "モーニングの発祥は名古屋ではないそうだね？"},
+                {"role": "assistant", "content": "発祥には諸説あります。"},
+            ],
+        )
+
+        self.assertIn("ambiguous_short_question", analysis["flags"])
+        self.assertTrue(analysis["should_clarify"])
+        self.assertFalse(analysis["should_checkpoint"])
+
     def test_audit_short_raw_roomy_annotation_is_not_overgrown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -694,6 +749,29 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertIn("Queued writes: 1", report)
             self.assertIn('"event": "model_output"', gs.trace_show(loaded, line=2))
 
+    def test_trace_centerline_report_handles_legacy_trace(self) -> None:
+        events = [
+            {"event": "turn_start", "run_id": "r", "user_text": "クラゲは脳みそがないの？"},
+            {"event": "final", "run_id": "r", "message": "神経叢があります。", "tool_steps": 0},
+            {"event": "turn_start", "run_id": "r", "user_text": "そういえば味噌も分散しているね。"},
+            {"event": "final", "run_id": "r", "message": "地域ごとの差があります。", "tool_steps": 0},
+            {"event": "turn_start", "run_id": "r", "user_text": "あんかけは？"},
+            {"event": "final", "run_id": "r", "message": "とろみのあるあんです。", "tool_steps": 0},
+            {"event": "turn_start", "run_id": "r", "user_text": "てことは結局なんなんだろう？"},
+            {"event": "final", "run_id": "r", "message": "まとめです。", "tool_steps": 0},
+        ]
+
+        data = gs.trace_report_data(events)
+        report = gs.trace_report_markdown(events)
+        centerline = gs.trace_centerline_markdown(events)
+
+        self.assertEqual(data["centerline_summary"]["turns"], 4)
+        self.assertGreaterEqual(data["centerline_summary"]["checkpoints"], 1)
+        self.assertIn("## Centerline", report)
+        self.assertIn("center_shift", centerline)
+        self.assertIn("ambiguous_short_question", centerline)
+        self.assertIn("checkpoint", centerline)
+
     def test_review_show_and_apply_all_safe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -825,7 +903,8 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
 
             self.assertEqual(message, "blocked observed")
             self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 0)
-            self.assertIn("read-only policy", events[2]["observation"])
+            tool_event = next(event for event in events if event["event"] == "tool_observation")
+            self.assertIn("read-only policy", tool_event["observation"])
 
     def test_experiment_run_writes_profile_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
