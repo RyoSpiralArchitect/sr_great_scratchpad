@@ -827,6 +827,7 @@ def cmd_experiment(args: argparse.Namespace) -> None:
             quiet=args.quiet,
             history_chars=args.history_chars,
             alternate_starter=args.alternate_starter,
+            rotate_condition_order=args.rotate_condition_order,
         )
         if args.json:
             print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -1432,6 +1433,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--alternate-starter",
         action="store_true",
         help="On even replicates, let Speaker B receive the odd-turn interventions.",
+    )
+    sp2.add_argument(
+        "--rotate-condition-order",
+        action="store_true",
+        help="Rotate condition order by replicate so each condition occupies each position.",
     )
     sp2.add_argument(
         "--history-chars",

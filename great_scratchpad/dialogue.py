@@ -165,6 +165,20 @@ def resolve_dialogue_conditions(
     return conditions
 
 
+def dialogue_condition_order(
+    conditions: list[str],
+    replicate: int,
+    rotate: bool = False,
+) -> list[str]:
+    if replicate < 1:
+        raise SystemExit("Dialogue replicate index must be at least 1.")
+    ordered = list(conditions)
+    if not rotate or len(ordered) < 2:
+        return ordered
+    offset = (replicate - 1) % len(ordered)
+    return ordered[offset:] + ordered[:offset]
+
+
 def dialogue_budget_plan(
     conditions: list[str],
     turns: int,
@@ -173,6 +187,7 @@ def dialogue_budget_plan(
     max_steps: int,
     json_repair_steps: int,
     alternate_starter: bool = False,
+    rotate_condition_order: bool = False,
 ) -> dict:
     if turns < 2:
         raise SystemExit("Dialogue turns must be at least 2.")
@@ -188,9 +203,18 @@ def dialogue_budget_plan(
     worst_api_calls = 0
     mode_turns = {mode: 0 for modes in DIALOGUE_CONDITIONS.values() for mode in modes}
     sessions = len(conditions) * replicates
+    condition_orders: list[dict] = []
     for replicate in range(1, replicates + 1):
         starter_index = 1 if alternate_starter and replicate % 2 == 0 else 0
-        for condition in conditions:
+        ordered_conditions = dialogue_condition_order(
+            conditions,
+            replicate,
+            rotate=rotate_condition_order,
+        )
+        condition_orders.append(
+            {"replicate": replicate, "conditions": ordered_conditions}
+        )
+        for condition in ordered_conditions:
             modes = DIALOGUE_CONDITIONS[condition]
             for turn in range(1, turns + 1):
                 mode_index = starter_index if turn % 2 == 1 else 1 - starter_index
@@ -209,6 +233,7 @@ def dialogue_budget_plan(
         "scratchpad_model_calls_per_turn": scratchpad_call_cap,
         "scratchpad_output_tokens_per_call": scratchpad_call_output_tokens,
         "worst_api_calls": worst_api_calls,
+        "condition_orders": condition_orders,
     }
 
 
@@ -700,6 +725,7 @@ def run_dialogue_matrix(
     quiet: bool,
     history_chars: int = 900,
     alternate_starter: bool = False,
+    rotate_condition_order: bool = False,
 ) -> dict:
     ensure_root(root)
     scenario = load_dialogue_scenario(scenario_path)
@@ -712,6 +738,7 @@ def run_dialogue_matrix(
         max_steps,
         json_repair_steps,
         alternate_starter=alternate_starter,
+        rotate_condition_order=rotate_condition_order,
     )
     if max_api_calls < 1:
         raise SystemExit("max_api_calls must be positive.")
@@ -752,11 +779,13 @@ def run_dialogue_matrix(
         "out_dir": str(out_dir),
         "scenario_path": str(scenario["_path"]),
         "scenario_sha256": scenario_hash,
+        "dialogue_runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "scenario": public_scenario,
         "llm": llm_config_metadata(cfg),
         "policy": policy,
         "history_chars": history_chars,
         "alternate_starter": alternate_starter,
+        "rotate_condition_order": rotate_condition_order,
         "budget_plan": plan,
         "limits": {
             "max_api_calls": max_api_calls,
@@ -769,7 +798,12 @@ def run_dialogue_matrix(
 
     abort = False
     for replicate in range(1, replicates + 1):
-        for condition in conditions:
+        ordered_conditions = dialogue_condition_order(
+            conditions,
+            replicate,
+            rotate=rotate_condition_order,
+        )
+        for condition_position, condition in enumerate(ordered_conditions, start=1):
             modes = DIALOGUE_CONDITIONS[condition]
             session_id = safe_id(f"{condition}-r{replicate:02d}")
             session_dir = out_dir / session_id
@@ -796,6 +830,7 @@ def run_dialogue_matrix(
             session: dict = {
                 "session_id": session_id,
                 "condition": condition,
+                "condition_position": condition_position,
                 "replicate": replicate,
                 "status": "running",
                 "speaker_modes": speaker_modes,

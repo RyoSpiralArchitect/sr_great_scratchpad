@@ -1619,7 +1619,7 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertEqual(first_json, semantic_prefix.with_suffix(".json").read_bytes())
             self.assertTrue(semantic_prefix.with_suffix(".md").exists())
 
-    def test_dialogue_alternate_starter_counterbalances_even_replicates(self) -> None:
+    def test_dialogue_counterbalances_starter_and_condition_order(self) -> None:
         plan = gs.dialogue_budget_plan(
             ["raw-scratchpad"],
             turns=3,
@@ -1628,10 +1628,37 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             max_steps=1,
             json_repair_steps=1,
             alternate_starter=True,
+            rotate_condition_order=True,
         )
         self.assertEqual(plan["mode_turns"]["raw"], 3)
         self.assertEqual(plan["mode_turns"]["scratchpad"], 3)
         self.assertEqual(plan["worst_api_calls"], 12)
+        self.assertEqual(
+            plan["condition_orders"],
+            [
+                {"replicate": 1, "conditions": ["raw-scratchpad"]},
+                {"replicate": 2, "conditions": ["raw-scratchpad"]},
+            ],
+        )
+
+        four_way = gs.dialogue_budget_plan(
+            ["raw-raw", "centerline-only", "write-no-recall", "scratchpad-scratchpad"],
+            turns=2,
+            replicates=4,
+            turn_output_tokens=100,
+            max_steps=1,
+            json_repair_steps=1,
+            rotate_condition_order=True,
+        )
+        self.assertEqual(
+            [item["conditions"][0] for item in four_way["condition_orders"]],
+            ["raw-raw", "centerline-only", "write-no-recall", "scratchpad-scratchpad"],
+        )
+        for position in range(4):
+            self.assertEqual(
+                {item["conditions"][position] for item in four_way["condition_orders"]},
+                {"raw-raw", "centerline-only", "write-no-recall", "scratchpad-scratchpad"},
+            )
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "scratchpad"
@@ -1663,18 +1690,19 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
                     "--profile",
                     "fake-parity",
                     "--conditions",
-                    "raw",
+                    "raw,centerline",
                     "--turns",
                     "2",
                     "--replicates",
                     "2",
                     "--alternate-starter",
+                    "--rotate-condition-order",
                     "--turn-output-tokens",
                     "100",
                     "--max-api-calls",
-                    "4",
+                    "8",
                     "--max-suite-output-tokens",
-                    "400",
+                    "800",
                     "--out-dir",
                     str(out_dir),
                     "--quiet",
@@ -1686,9 +1714,18 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
                 args.func(args)
             result = json.loads(out.getvalue())
 
+            self.assertEqual(len(result["dialogue_runner_sha256"]), 64)
+            self.assertEqual(
+                [session["condition"] for session in result["sessions"]],
+                ["raw-raw", "centerline-only", "centerline-only", "raw-raw"],
+            )
+            self.assertEqual(
+                [session["condition_position"] for session in result["sessions"]],
+                [1, 2, 1, 2],
+            )
             self.assertEqual(
                 [session["starting_speaker"] for session in result["sessions"]],
-                ["A", "B"],
+                ["A", "A", "B", "B"],
             )
 
 

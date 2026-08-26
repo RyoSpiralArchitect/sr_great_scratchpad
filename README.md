@@ -285,14 +285,15 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
   --preset ablation \
   --turns 12 \
   --history-chars 700 \
-  --replicates 3 \
+  --replicates 4 \
   --alternate-starter \
+  --rotate-condition-order \
   --turn-output-tokens 600 \
-  --max-api-calls 288 \
-  --max-suite-output-tokens 86400
+  --max-api-calls 384 \
+  --max-suite-output-tokens 115200
 ```
 
-`ablation` は `raw/raw`、`centerline-only`、`write-no-recall`、`scratchpad/scratchpad` の4条件です。全条件の通常会話履歴は最新側から同じ文字数だけ残します。`write-no-recall` は note を保存しますが、保存済みnoteの自動注入と全read actionを閉じるため、「書いたこと」自体と「後で読めたこと」を分離できます。literal probe は凍結turnでの語の出現だけを報告し、意味的な勝者判定には使いません。大きな反復を始める前に、`--replicates 1` と対応する低い上限で校正してください。
+`ablation` は `raw/raw`、`centerline-only`、`write-no-recall`、`scratchpad/scratchpad` の4条件です。`--rotate-condition-order` はreplicateごとに順序を巡回し、n=4では各条件を各実行位置へ一度ずつ置きます。全条件の通常会話履歴は最新側から同じ文字数だけ残します。`write-no-recall` は note を保存しますが、保存済みnoteの自動注入と全read actionを閉じるため、「書いたこと」自体と「後で読めたこと」を分離できます。literal probe は凍結turnでの語の出現だけを報告し、意味的な勝者判定には使いません。大きな反復を始める前に、`--replicates 1` と対応する低い上限で校正してください。
 
 凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
 
@@ -590,14 +591,15 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
   --preset ablation \
   --turns 12 \
   --history-chars 700 \
-  --replicates 3 \
+  --replicates 4 \
   --alternate-starter \
+  --rotate-condition-order \
   --turn-output-tokens 600 \
-  --max-api-calls 288 \
-  --max-suite-output-tokens 86400
+  --max-api-calls 384 \
+  --max-suite-output-tokens 115200
 ```
 
-The ablation conditions are `raw/raw`, `centerline-only`, `write-no-recall`, and `scratchpad/scratchpad`. Every condition receives the same newest-first ordinary-dialogue window. Write-no-recall persists notes but disables automatic note injection and all read actions, separating the act of writing from later availability. Frozen-turn literal probes report exact lexical evidence only; they do not declare a semantic winner. Calibrate with one replicate and proportionally lower caps before a larger run.
+The ablation conditions are `raw/raw`, `centerline-only`, `write-no-recall`, and `scratchpad/scratchpad`. `--rotate-condition-order` cycles the order by replicate, placing every condition in every execution position once at n=4. Every condition receives the same newest-first ordinary-dialogue window. Write-no-recall persists notes but disables automatic note injection and all read actions, separating the act of writing from later availability. Frozen-turn literal probes report exact lexical evidence only; they do not declare a semantic winner. Calibrate with one replicate and proportionally lower caps before a larger run.
 
 Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
 

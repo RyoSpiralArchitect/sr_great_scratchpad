@@ -43,7 +43,7 @@ Secondary:
 
 ## Stage 1: n=4
 
-Use four replicates so the starting speaker is exactly balanced A/B/A/B with `--alternate-starter`. Before calling the provider, add deterministic four-way condition-order rotation so time/order effects are not confounded with treatment.
+Use four replicates so the starting speaker is exactly balanced A/B/A/B with `--alternate-starter`. Use `--rotate-condition-order` so each condition occupies each execution position once and time/order effects are not confounded with treatment.
 
 Worst-case preflight:
 
@@ -105,8 +105,8 @@ Campaign total if both stages run:
 - worst case: 1,152 calls and 345,600 output tokens
 - calibration projection: about 660 calls, 842,892 prompt tokens, and 86,772 output tokens
 
-Before provider calls, implement and test deterministic four-way condition-order
-rotation. Before reading the n=8 result, add the fixed-seed paired bootstrap and
+Use the same deterministic four-way condition-order rotation for both cycles of
+the n=8 cohort. Before reading the n=8 result, add the fixed-seed paired bootstrap and
 exact discordant-pair report to the analyzer. Report all paired deltas, mean,
 median, sample standard deviation, and positive-direction count. Keep
 protocol/mechanical failures separate from semantic failures.
