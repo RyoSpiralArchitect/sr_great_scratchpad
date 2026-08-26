@@ -168,7 +168,7 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             " print(json.dumps({'center':'c','trajectory':'t','anchors':'a',"
             "'assumptions':'s','open_questions':'q','drift_risks':'d'}))\n"
             "else:\n"
-            " print('not json')\n"
+            " print('x' * 80)\n"
         )
         cfg = {
             "backend": "command",
@@ -337,11 +337,16 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
                 verbose=False,
                 trace_events=events,
                 json_repair_steps=1,
+                output_token_budget=20,
+                max_model_calls=2,
+                per_call_output_token_limit=20,
             )
 
             self.assertEqual(message, "repaired final")
             self.assertIn("json_parse_error", [event["event"] for event in events])
             self.assertEqual(events[-1]["repair_attempts"], 1)
+            self.assertGreater(events[-1]["repair_output_tokens_used"], 0)
+            self.assertLessEqual(events[-1]["output_tokens_used"], 20)
 
     def test_chat_normalizes_action_name_in_type_field(self) -> None:
         code = (
@@ -1456,6 +1461,8 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
         )
         self.assertEqual(plan["worst_api_calls"], 64)
         self.assertEqual(plan["max_output_tokens_suite"], 15360)
+        self.assertEqual(plan["max_repair_output_tokens_suite"], 3840)
+        self.assertEqual(plan["max_provider_output_tokens_suite"], 19200)
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(SystemExit, "worst-case API calls"):
                 gs.run_dialogue_matrix(
@@ -1521,7 +1528,7 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
                     "--max-api-calls",
                     "96",
                     "--max-suite-output-tokens",
-                    "10000",
+                    "12000",
                     "--out-dir",
                     str(out_dir),
                     "--quiet",

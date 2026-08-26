@@ -49,7 +49,9 @@ Worst-case preflight:
 
 - 16 sessions, 192 utterances
 - 384 API calls
-- 115,200 output tokens
+- 115,200 accepted output tokens
+- 28,800 JSON-repair reserve tokens
+- 144,000 provider output tokens including the reserve
 
 Projection from calibration 3, not a cap:
 
@@ -92,7 +94,9 @@ Worst-case total at n=8:
 
 - 32 sessions, 384 utterances
 - 768 API calls
-- 230,400 output tokens
+- 230,400 accepted output tokens
+- 57,600 JSON-repair reserve tokens
+- 288,000 provider output tokens including the reserve
 
 Calibration-based projection at n=8:
 
@@ -102,7 +106,7 @@ Calibration-based projection at n=8:
 
 Campaign total if both stages run:
 
-- worst case: 1,152 calls and 345,600 output tokens
+- worst case: 1,152 calls, 345,600 accepted output tokens, and 432,000 provider output tokens including repair reserves
 - calibration projection: about 660 calls, 842,892 prompt tokens, and 86,772 output tokens
 
 Use the same deterministic four-way condition-order rotation for both cycles of

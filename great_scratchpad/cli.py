@@ -1462,7 +1462,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-suite-output-tokens",
         type=int,
         default=24000,
-        help="Hard preflight cap on planned generated tokens.",
+        help="Hard preflight cap on accepted plus JSON-repair output tokens.",
     )
     sp2.add_argument("--quiet", action="store_true")
     sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")

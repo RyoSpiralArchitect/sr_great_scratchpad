@@ -246,6 +246,7 @@ def run_chat_turn(
     repairs_used = 0
     add_note_requests = 0
     output_tokens_used = 0
+    repair_output_tokens_used = 0
     centerline = analyze_centerline(user_text, history)
     centerline_hints = render_centerline_hints(centerline)
     record_trace(
@@ -299,6 +300,7 @@ def run_chat_turn(
                 repair_attempts=repairs_used,
                 output_token_budget=output_token_budget,
                 output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
@@ -318,6 +320,7 @@ def run_chat_turn(
                     repair_attempts=repairs_used,
                     output_token_budget=output_token_budget,
                     output_tokens_used=output_tokens_used,
+                    repair_output_tokens_used=repair_output_tokens_used,
                     duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
                 )
                 return message
@@ -382,10 +385,11 @@ def run_chat_turn(
             raise
         model_calls += 1
         raw_output = str(result.get("content", ""))
-        output_tokens_used += completion_token_count(result.get("usage"))
+        call_output_tokens = completion_token_count(result.get("usage"))
         try:
             obj, parse_metadata = extract_json_object_with_metadata(raw_output)
         except (ValueError, json.JSONDecodeError) as exc:
+            repair_output_tokens_used += call_output_tokens
             record_trace(
                 trace_events,
                 "json_parse_error",
@@ -393,6 +397,7 @@ def run_chat_turn(
                 model_calls=model_calls,
                 error=str(exc),
                 output=limit_text(raw_output, 2000),
+                repair_output_tokens_used=repair_output_tokens_used,
                 llm=llm_trace(result),
             )
             if repairs_used < max(0, json_repair_steps):
@@ -415,9 +420,11 @@ def run_chat_turn(
                 repair_attempts=repairs_used,
                 output_token_budget=output_token_budget,
                 output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
+        output_tokens_used += call_output_tokens
         if parse_metadata.get("recovered"):
             record_trace(
                 trace_events,
@@ -463,6 +470,7 @@ def run_chat_turn(
                 repair_attempts=repairs_used,
                 output_token_budget=output_token_budget,
                 output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
@@ -479,6 +487,7 @@ def run_chat_turn(
                 repair_attempts=repairs_used,
                 output_token_budget=output_token_budget,
                 output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
@@ -517,6 +526,7 @@ def run_chat_turn(
                 repair_attempts=repairs_used,
                 output_token_budget=output_token_budget,
                 output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
@@ -578,6 +588,7 @@ def run_chat_turn(
                 repair_attempts=repairs_used,
                 output_token_budget=output_token_budget,
                 output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
@@ -598,6 +609,7 @@ def run_chat_turn(
         repair_attempts=repairs_used,
         output_token_budget=output_token_budget,
         output_tokens_used=output_tokens_used,
+        repair_output_tokens_used=repair_output_tokens_used,
         duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
     )
     return message

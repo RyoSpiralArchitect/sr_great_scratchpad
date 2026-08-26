@@ -222,6 +222,12 @@ def dialogue_budget_plan(
                 mode_turns[mode] += 1
                 call_cap = 1 if mode in PLAIN_DIALOGUE_MODES else scratchpad_call_cap
                 worst_api_calls += call_cap
+    accepted_output_tokens = sessions * turns * turn_output_tokens
+    repair_output_tokens = (
+        sum(mode_turns[mode] for mode in SCRATCHPAD_DIALOGUE_MODES)
+        * json_repair_steps
+        * scratchpad_call_output_tokens
+    )
     return {
         "sessions": sessions,
         "turns_per_session": turns,
@@ -229,7 +235,9 @@ def dialogue_budget_plan(
         "mode_turns": mode_turns,
         "turn_output_tokens": turn_output_tokens,
         "max_output_tokens_per_session": turns * turn_output_tokens,
-        "max_output_tokens_suite": sessions * turns * turn_output_tokens,
+        "max_output_tokens_suite": accepted_output_tokens,
+        "max_repair_output_tokens_suite": repair_output_tokens,
+        "max_provider_output_tokens_suite": accepted_output_tokens + repair_output_tokens,
         "scratchpad_model_calls_per_turn": scratchpad_call_cap,
         "scratchpad_output_tokens_per_call": scratchpad_call_output_tokens,
         "worst_api_calls": worst_api_calls,
@@ -650,9 +658,12 @@ def dialogue_report_markdown(result: dict) -> str:
         f"- Shared output budget per utterance: {plan['turn_output_tokens']} tokens",
         f"- Recent dialogue window: {result['history_chars']} characters (newest text retained)",
         f"- Scratchpad per-call reserve cap: {plan['scratchpad_output_tokens_per_call']} tokens",
+        f"- Accepted-output allowance: {plan['max_output_tokens_suite']} tokens",
+        f"- JSON-repair reserve: {plan['max_repair_output_tokens_suite']} tokens",
+        f"- Provider-output ceiling: {plan['max_provider_output_tokens_suite']} tokens",
         f"- Worst-case API calls: {plan['worst_api_calls']}",
         "",
-        "The output-token allowance is pooled across all internal calls in each scratchpad utterance. Input tokens are intentionally reported separately because prompt and memory overhead are part of the treatment cost.",
+        "The accepted output-token allowance is pooled across valid internal calls in each scratchpad utterance. Invalid JSON is charged to a separate bounded repair reserve; provider usage reports both. Input tokens are intentionally reported separately because prompt and memory overhead are part of the treatment cost.",
         "",
         "## Conditions",
         "",
@@ -749,9 +760,9 @@ def run_dialogue_matrix(
         )
     if max_suite_output_tokens < 1:
         raise SystemExit("max_suite_output_tokens must be positive.")
-    if plan["max_output_tokens_suite"] > max_suite_output_tokens:
+    if plan["max_provider_output_tokens_suite"] > max_suite_output_tokens:
         raise SystemExit(
-            f"Dialogue preflight refused {plan['max_output_tokens_suite']} planned output tokens; "
+            f"Dialogue preflight refused {plan['max_provider_output_tokens_suite']} worst-case provider output tokens; "
             f"--max-suite-output-tokens is {max_suite_output_tokens}."
         )
     if history_chars < 1:
