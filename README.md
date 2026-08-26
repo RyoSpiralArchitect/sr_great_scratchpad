@@ -276,6 +276,24 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
 
 各 scratchpad 話者は run 内の隔離領域を使い、書いた note を次の自分の発話から参照できます。`report.md`、sessionごとの `transcript.md` / `transcript.jsonl`、provider-visible promptを含む `trace.jsonl`、manifest、scratchpad note が同じ出力ディレクトリに保存されます。report は memory context 注入回数、複数JSONからの protocol recovery、parse error も分けて表示します。`add_note` と完全な final が同時に返った場合だけ、書き込み成功後に final を安全に再利用します。検索系actionの先書き final は採用しません。実行前には最悪 API call 数と suite 全体の生成token上限を検査します。
 
+centerline、書き込み、再読込の寄与を分ける遅延想起アブレーション:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset ablation \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 3 \
+  --alternate-starter \
+  --turn-output-tokens 600 \
+  --max-api-calls 288 \
+  --max-suite-output-tokens 86400
+```
+
+`ablation` は `raw/raw`、`centerline-only`、`write-no-recall`、`scratchpad/scratchpad` の4条件です。全条件の通常会話履歴は最新側から同じ文字数だけ残します。`write-no-recall` は note を保存しますが、保存済みnoteの自動注入と全read actionを閉じるため、「書いたこと」自体と「後で読めたこと」を分離できます。literal probe は凍結turnでの語の出現だけを報告し、意味的な勝者判定には使いません。大きな反復を始める前に、`--replicates 1` と対応する低い上限で校正してください。
+
 ### Live run
 
 挙動を見ながら育てるための小さな実行例を用意しています。
@@ -552,6 +570,24 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
 ```
 
 The default matrix runs `raw/raw`, both orientations of `raw/scratchpad`, and `scratchpad/scratchpad`. Every utterance receives the same generated-token allowance; scratchpad action and final calls share that allowance. Input tokens are reported rather than equalized because runtime and memory overhead are part of the treatment cost. Scratchpad speakers use isolated per-run workspaces whose notes become available on their later turns. The runner freezes transcripts, provider-visible prompts, traces, manifests, usage, tool activity, memory-context injections, multi-object protocol recoveries, parse errors, and deterministic literal-anchor coverage, while leaving the quality judgment to transcript review. A complete trailing final is reused only after a successful `add_note`; search-like actions always wait for their observation.
+
+Run the delayed-recall ablation to separate deterministic navigation, memory writing, and memory recall:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset ablation \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 3 \
+  --alternate-starter \
+  --turn-output-tokens 600 \
+  --max-api-calls 288 \
+  --max-suite-output-tokens 86400
+```
+
+The ablation conditions are `raw/raw`, `centerline-only`, `write-no-recall`, and `scratchpad/scratchpad`. Every condition receives the same newest-first ordinary-dialogue window. Write-no-recall persists notes but disables automatic note injection and all read actions, separating the act of writing from later availability. Frozen-turn literal probes report exact lexical evidence only; they do not declare a semantic winner. Calibrate with one replicate and proportionally lower caps before a larger run.
 
 ### Live Run
 

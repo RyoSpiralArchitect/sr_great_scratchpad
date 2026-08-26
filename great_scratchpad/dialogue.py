@@ -6,22 +6,34 @@ import re
 import time
 from pathlib import Path
 
+from .centerline import analyze_centerline, render_centerline_hints
 from .chat import append_trace_events, llm_trace, run_chat_turn
 from .experiments import add_run_id, make_run_id, write_manifest
 from .llm import call_llm_result, config_with_output_token_limit, llm_config_metadata
 from .storage import ensure_root, ensure_thread_dirs, load_llm_config, now_iso, safe_id
+from .text import limit_text_tail
 
 DIALOGUE_CONDITIONS = {
     "raw-raw": ("raw", "raw"),
     "raw-scratchpad": ("raw", "scratchpad"),
     "scratchpad-raw": ("scratchpad", "raw"),
     "scratchpad-scratchpad": ("scratchpad", "scratchpad"),
+    "centerline-only": ("centerline-only", "centerline-only"),
+    "write-no-recall": ("write-no-recall", "write-no-recall"),
 }
 DEFAULT_DIALOGUE_CONDITIONS = (
     "raw-raw",
     "raw-scratchpad",
     "scratchpad-scratchpad",
 )
+ABLATION_DIALOGUE_CONDITIONS = (
+    "raw-raw",
+    "centerline-only",
+    "write-no-recall",
+    "scratchpad-scratchpad",
+)
+PLAIN_DIALOGUE_MODES = frozenset({"raw", "centerline-only"})
+SCRATCHPAD_DIALOGUE_MODES = frozenset({"scratchpad", "write-no-recall"})
 
 
 def load_dialogue_scenario(path: Path) -> dict:
@@ -74,6 +86,26 @@ def load_dialogue_scenario(path: Path) -> dict:
     scenario["review_questions"] = [
         str(item).strip() for item in scenario.get("review_questions", []) if str(item).strip()
     ]
+    literal_probes: list[dict] = []
+    for item in scenario.get("literal_probes", []):
+        if not isinstance(item, dict):
+            raise SystemExit("Each dialogue literal probe must be a JSON object.")
+        probe_id = str(item.get("id", "")).strip()
+        try:
+            probe_turn = int(item.get("turn"))
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("Dialogue literal probe turn must be an integer.") from exc
+        match = str(item.get("match", "all")).strip().lower()
+        terms = [str(term).strip() for term in item.get("terms", []) if str(term).strip()]
+        if not probe_id or probe_turn < 1 or not terms or match not in {"all", "any"}:
+            raise SystemExit(
+                "Dialogue literal probes require id, turn >= 1, non-empty terms, "
+                "and match=all|any."
+            )
+        literal_probes.append(
+            {"id": probe_id, "turn": probe_turn, "match": match, "terms": terms}
+        )
+    scenario["literal_probes"] = literal_probes
     scenario["_path"] = str(path)
     return scenario
 
@@ -90,15 +122,29 @@ def normalize_condition_name(name: str) -> str:
         "raw-sr": "raw-scratchpad",
         "sr-raw": "scratchpad-raw",
         "sr-sr": "scratchpad-scratchpad",
+        "raw": "raw-raw",
+        "centerline": "centerline-only",
+        "full": "scratchpad-scratchpad",
+        "full-scratchpad": "scratchpad-scratchpad",
+        "write-only": "write-no-recall",
     }
     return aliases.get(normalized, normalized)
 
 
-def resolve_dialogue_conditions(value: str | None, mirror_mixed: bool = True) -> list[str]:
+def resolve_dialogue_conditions(
+    value: str | None,
+    mirror_mixed: bool = True,
+    preset: str = "matrix",
+) -> list[str]:
+    if preset not in {"matrix", "ablation"}:
+        raise SystemExit(f"Unknown dialogue preset: {preset!r}")
+    defaults = (
+        ABLATION_DIALOGUE_CONDITIONS if preset == "ablation" else DEFAULT_DIALOGUE_CONDITIONS
+    )
     requested = (
         [part for part in str(value).split(",") if part.strip()]
         if value
-        else list(DEFAULT_DIALOGUE_CONDITIONS)
+        else list(defaults)
     )
     conditions: list[str] = []
     for raw in requested:
@@ -126,6 +172,7 @@ def dialogue_budget_plan(
     turn_output_tokens: int,
     max_steps: int,
     json_repair_steps: int,
+    alternate_starter: bool = False,
 ) -> dict:
     if turns < 2:
         raise SystemExit("Dialogue turns must be at least 2.")
@@ -139,14 +186,18 @@ def dialogue_budget_plan(
     scratchpad_call_cap = 1 + max_steps + json_repair_steps
     scratchpad_call_output_tokens = max(1, turn_output_tokens // (1 + max_steps))
     worst_api_calls = 0
-    mode_turns = {"raw": 0, "scratchpad": 0}
+    mode_turns = {mode: 0 for modes in DIALOGUE_CONDITIONS.values() for mode in modes}
     sessions = len(conditions) * replicates
-    for condition in conditions:
-        modes = DIALOGUE_CONDITIONS[condition]
-        for turn in range(1, turns + 1):
-            mode = modes[0 if turn % 2 == 1 else 1]
-            mode_turns[mode] += replicates
-            worst_api_calls += replicates * (1 if mode == "raw" else scratchpad_call_cap)
+    for replicate in range(1, replicates + 1):
+        starter_index = 1 if alternate_starter and replicate % 2 == 0 else 0
+        for condition in conditions:
+            modes = DIALOGUE_CONDITIONS[condition]
+            for turn in range(1, turns + 1):
+                mode_index = starter_index if turn % 2 == 1 else 1 - starter_index
+                mode = modes[mode_index]
+                mode_turns[mode] += 1
+                call_cap = 1 if mode in PLAIN_DIALOGUE_MODES else scratchpad_call_cap
+                worst_api_calls += call_cap
     return {
         "sessions": sessions,
         "turns_per_session": turns,
@@ -189,7 +240,7 @@ def raw_dialogue_config(cfg: dict) -> dict:
     return out
 
 
-def render_dialogue_context(records: list[dict]) -> str:
+def render_dialogue_context(records: list[dict], max_chars: int = 4000) -> str:
     if not records:
         return "(no earlier utterances)"
     lines: list[str] = []
@@ -199,7 +250,7 @@ def render_dialogue_context(records: list[dict]) -> str:
         else:
             label = f"Speaker {item.get('speaker', '?')}"
         lines.append(f"{label}: {item.get('message', '')}")
-    return "\n\n".join(lines)
+    return limit_text_tail("\n\n".join(lines), max_chars)
 
 
 def dialogue_history(records: list[dict], speaker: str) -> list[dict[str, str]]:
@@ -234,6 +285,7 @@ def raw_dialogue_prompt(
     prior_records: list[dict],
     turn: int,
     turns: int,
+    history_chars: int = 4000,
 ) -> str:
     return f"""Dialogue: {scenario['title']}
 
@@ -244,7 +296,7 @@ Opening question shared by both speakers:
 
 Earlier transcript:
 ---
-{render_dialogue_context(prior_records)}
+{render_dialogue_context(prior_records, history_chars)}
 ---
 
 Current message:
@@ -277,30 +329,61 @@ def call_raw_dialogue_turn(
     turn: int,
     turns: int,
     output_token_budget: int,
+    history_chars: int = 4000,
+    mode: str = "raw",
 ) -> tuple[str, list[dict], dict]:
+    if mode not in PLAIN_DIALOGUE_MODES:
+        raise ValueError(f"Unsupported plain dialogue mode: {mode}")
     started = time.perf_counter()
     system_prompt = raw_dialogue_system(scenario, speaker, turn, turns)
-    prompt = raw_dialogue_prompt(scenario, speaker, incoming, prior_records, turn, turns)
+    history = dialogue_history(prior_records, speaker)
+    centerline = analyze_centerline(incoming, history)
+    if mode == "centerline-only":
+        system_prompt += (
+            "\nUse these deterministic centerline hints silently. They are navigation aids, "
+            "not claims to repeat:\n---\n"
+            + render_centerline_hints(centerline)
+            + "\n---\n"
+        )
+    prompt = raw_dialogue_prompt(
+        scenario,
+        speaker,
+        incoming,
+        prior_records,
+        turn,
+        turns,
+        history_chars=history_chars,
+    )
     call_cfg = config_with_output_token_limit(raw_dialogue_config(cfg), output_token_budget)
     events = [
         {
             "time": now_iso(),
             "event": "turn_start",
             "speaker": speaker,
-            "mode": "raw",
+            "mode": mode,
             "turn": turn,
             "output_token_budget": output_token_budget,
             "llm": llm_config_metadata(call_cfg),
         },
         {
             "time": now_iso(),
+            "event": "centerline",
+            "speaker": speaker,
+            "mode": mode,
+            "turn": turn,
+            "provider_visible": mode == "centerline-only",
+            **centerline,
+        },
+        {
+            "time": now_iso(),
             "event": "model_request",
             "speaker": speaker,
-            "mode": "raw",
+            "mode": mode,
             "turn": turn,
             "prompt": prompt,
             "system_prompt": system_prompt,
             "remaining_output_tokens": output_token_budget,
+            "history_chars": history_chars,
             "llm": llm_config_metadata(call_cfg),
         },
     ]
@@ -312,7 +395,7 @@ def call_raw_dialogue_turn(
                 "time": now_iso(),
                 "event": "error",
                 "speaker": speaker,
-                "mode": "raw",
+                "mode": mode,
                 "turn": turn,
                 "error": str(exc),
                 "duration_ms": round((time.perf_counter() - started) * 1000, 3),
@@ -329,7 +412,7 @@ def call_raw_dialogue_turn(
                 "time": now_iso(),
                 "event": "model_output",
                 "speaker": speaker,
-                "mode": "raw",
+                "mode": mode,
                 "turn": turn,
                 "raw_output": message,
                 "raw_output_chars": len(message),
@@ -339,7 +422,7 @@ def call_raw_dialogue_turn(
                 "time": now_iso(),
                 "event": "final",
                 "speaker": speaker,
-                "mode": "raw",
+                "mode": mode,
                 "turn": turn,
                 "message": message,
                 "model_calls": 1,
@@ -354,7 +437,7 @@ def call_raw_dialogue_turn(
         "tool_steps": 0,
         "tool_actions": [],
         "memory_writes": 0,
-        "centerline_flags": [],
+        "centerline_flags": sorted(set(centerline.get("flags", []))),
         "usage": dict(result.get("usage", {})),
         "duration_ms": duration_ms,
     }
@@ -380,7 +463,7 @@ def summarize_scratchpad_turn(events: list[dict], message: str) -> dict:
             llm = event.get("llm")
             if isinstance(llm, dict):
                 add_usage(usage, llm.get("usage"))
-        if name == "tool_observation":
+        if name == "tool_observation" and not event.get("duplicate_request"):
             tool_steps += 1
             action = str(event.get("action", ""))
             tool_actions.append(action)
@@ -457,6 +540,41 @@ def anchor_coverage(records: list[dict], anchors: list[str]) -> dict:
     }
 
 
+def literal_probe_evidence(records: list[dict], probes: list[dict]) -> dict:
+    utterances = {
+        int(item["turn"]): item
+        for item in records
+        if item.get("kind") == "utterance" and isinstance(item.get("turn"), int)
+    }
+    results: list[dict] = []
+    for probe in probes:
+        record = utterances.get(int(probe["turn"]))
+        message = str(record.get("message", "")) if record else ""
+        folded = re.sub(r"\s+", "", message).casefold()
+        found = [
+            term
+            for term in probe["terms"]
+            if re.sub(r"\s+", "", term).casefold() in folded
+        ]
+        passed = len(found) == len(probe["terms"])
+        if probe["match"] == "any":
+            passed = bool(found)
+        results.append(
+            {
+                **probe,
+                "speaker": record.get("speaker") if record else None,
+                "found": found,
+                "missing": [term for term in probe["terms"] if term not in found],
+                "passed": passed,
+            }
+        )
+    return {
+        "passed": sum(1 for item in results if item["passed"]),
+        "total": len(results),
+        "results": results,
+    }
+
+
 def transcript_markdown(scenario: dict, session: dict, records: list[dict]) -> str:
     lines = [
         f"# {scenario['title']}",
@@ -465,6 +583,8 @@ def transcript_markdown(scenario: dict, session: dict, records: list[dict]) -> s
         f"- Condition: {session['condition']}",
         f"- Speaker A: {session['speaker_modes']['A']}",
         f"- Speaker B: {session['speaker_modes']['B']}",
+        f"- Starting speaker: {session['starting_speaker']}",
+        f"- Recent dialogue window: {session['history_chars']} characters",
         f"- Per-utterance output budget: {session['turn_output_tokens']} tokens",
         "",
         "## Opening",
@@ -492,7 +612,7 @@ def transcript_markdown(scenario: dict, session: dict, records: list[dict]) -> s
 def dialogue_report_markdown(result: dict) -> str:
     plan = result["budget_plan"]
     lines = [
-        "# Model Dialogue Matrix Report",
+        "# Model Dialogue Experiment Report",
         "",
         f"- Run id: {result['run_id']}",
         f"- Status: {result['status']}",
@@ -503,6 +623,7 @@ def dialogue_report_markdown(result: dict) -> str:
         f"- Sessions: {plan['sessions']}",
         f"- Utterances per session: {plan['turns_per_session']}",
         f"- Shared output budget per utterance: {plan['turn_output_tokens']} tokens",
+        f"- Recent dialogue window: {result['history_chars']} characters (newest text retained)",
         f"- Scratchpad per-call reserve cap: {plan['scratchpad_output_tokens_per_call']} tokens",
         f"- Worst-case API calls: {plan['worst_api_calls']}",
         "",
@@ -510,15 +631,17 @@ def dialogue_report_markdown(result: dict) -> str:
         "",
         "## Conditions",
         "",
-        "| Session | A | B | Status | Calls | Tools | Writes | Memory ctx | Recoveries | Parse errors | Prompt tok | Output tok | Literal anchors |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Session | Start | A | B | Status | Calls | Tools | Writes | Memory ctx | Recoveries | Parse errors | Prompt tok | Output tok | Anchors | Probes |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for session in result.get("sessions", []):
         usage = session.get("usage", {})
         coverage = session.get("anchor_coverage", {})
+        probes = session.get("literal_probe_evidence", {})
         lines.append(
-            "| {session_id} | {a} | {b} | {status} | {calls} | {tools} | {writes} | {memory_ctx} | {recoveries} | {parse_errors} | {prompt} | {completion} | {found}/{total} |".format(
+            "| {session_id} | {start} | {a} | {b} | {status} | {calls} | {tools} | {writes} | {memory_ctx} | {recoveries} | {parse_errors} | {prompt} | {completion} | {found}/{total} | {probe_passed}/{probe_total} |".format(
                 session_id=session["session_id"],
+                start=session["starting_speaker"],
                 a=session["speaker_modes"]["A"],
                 b=session["speaker_modes"]["B"],
                 status=session["status"],
@@ -532,6 +655,8 @@ def dialogue_report_markdown(result: dict) -> str:
                 completion=usage.get("completion_tokens", 0),
                 found=coverage.get("count", 0),
                 total=coverage.get("total", 0),
+                probe_passed=probes.get("passed", 0),
+                probe_total=probes.get("total", 0),
             )
         )
     lines.extend(
@@ -539,13 +664,19 @@ def dialogue_report_markdown(result: dict) -> str:
             "",
             "## Review Lenses",
             "",
-            "Raw/raw is the sampling baseline. The two mixed sessions expose position effects. Scratchpad/scratchpad shows whether the memory treatment stabilizes or amplifies itself when both sides use it.",
+            "Raw/raw is the sampling baseline. Centerline-only adds deterministic navigation without the JSON/tool protocol. Write-no-recall uses the same writing runtime but blocks every read path and injects no saved notes. Scratchpad/scratchpad enables both writing and later recall. Mixed sessions, when selected, expose position effects.",
             "",
         ]
     )
     for question in result["scenario"].get("review_questions", []):
         lines.append(f"- {question}")
-    lines.extend(["", "No automatic quality winner is declared; transcripts and deterministic usage/tool evidence remain separate from interpretation.", ""])
+    lines.extend(
+        [
+            "",
+            "Literal probes report exact term presence at frozen turns; they are not semantic quality scores. No automatic quality winner is declared, and transcripts plus deterministic usage/tool evidence remain separate from interpretation.",
+            "",
+        ]
+    )
     return "\n".join(lines).strip() + "\n"
 
 
@@ -567,6 +698,8 @@ def run_dialogue_matrix(
     max_api_calls: int,
     max_suite_output_tokens: int,
     quiet: bool,
+    history_chars: int = 900,
+    alternate_starter: bool = False,
 ) -> dict:
     ensure_root(root)
     scenario = load_dialogue_scenario(scenario_path)
@@ -578,6 +711,7 @@ def run_dialogue_matrix(
         turn_output_tokens,
         max_steps,
         json_repair_steps,
+        alternate_starter=alternate_starter,
     )
     if max_api_calls < 1:
         raise SystemExit("max_api_calls must be positive.")
@@ -593,6 +727,8 @@ def run_dialogue_matrix(
             f"Dialogue preflight refused {plan['max_output_tokens_suite']} planned output tokens; "
             f"--max-suite-output-tokens is {max_suite_output_tokens}."
         )
+    if history_chars < 1:
+        raise SystemExit("history_chars must be positive.")
 
     cfg = load_llm_config(root, llm_config, profile)
     run_id = make_run_id("dialogue")
@@ -619,6 +755,8 @@ def run_dialogue_matrix(
         "scenario": public_scenario,
         "llm": llm_config_metadata(cfg),
         "policy": policy,
+        "history_chars": history_chars,
+        "alternate_starter": alternate_starter,
         "budget_plan": plan,
         "limits": {
             "max_api_calls": max_api_calls,
@@ -641,9 +779,10 @@ def run_dialogue_matrix(
             transcript_md_path = session_dir / "transcript.md"
             session_manifest_path = session_dir / "manifest.json"
             speaker_modes = {"A": modes[0], "B": modes[1]}
+            starting_speaker = "B" if alternate_starter and replicate % 2 == 0 else "A"
             scratchpads: dict[str, tuple[Path, Path, str]] = {}
             for speaker in ("A", "B"):
-                if speaker_modes[speaker] != "scratchpad":
+                if speaker_modes[speaker] not in SCRATCHPAD_DIALOGUE_MODES:
                     continue
                 scratch_root = session_dir / "scratchpads" / f"speaker-{speaker.lower()}"
                 thread_id = safe_id(f"{session_id}-speaker-{speaker.lower()}")
@@ -660,6 +799,8 @@ def run_dialogue_matrix(
                 "replicate": replicate,
                 "status": "running",
                 "speaker_modes": speaker_modes,
+                "starting_speaker": starting_speaker,
+                "history_chars": history_chars,
                 "turns_planned": turn_count,
                 "turns_completed": 0,
                 "turn_output_tokens": turn_output_tokens,
@@ -680,7 +821,11 @@ def run_dialogue_matrix(
             write_manifest(session_manifest_path, session)
 
             for turn in range(1, turn_count + 1):
-                speaker = "A" if turn % 2 == 1 else "B"
+                speaker = (
+                    starting_speaker
+                    if turn % 2 == 1
+                    else ("B" if starting_speaker == "A" else "A")
+                )
                 mode = speaker_modes[speaker]
                 if turn == 1:
                     incoming = f"Moderator opening:\n{scenario['opening']}"
@@ -698,7 +843,7 @@ def run_dialogue_matrix(
 
                 events: list[dict] = []
                 try:
-                    if mode == "raw":
+                    if mode in PLAIN_DIALOGUE_MODES:
                         message, events, turn_summary = call_raw_dialogue_turn(
                             cfg=cfg,
                             scenario=scenario,
@@ -708,9 +853,15 @@ def run_dialogue_matrix(
                             turn=turn,
                             turns=turn_count,
                             output_token_budget=turn_output_tokens,
+                            history_chars=history_chars,
+                            mode=mode,
                         )
                     else:
                         scratch_root, tdir, thread_id = scratchpads[speaker]
+                        mode_recent_n = recent_n if mode == "scratchpad" else 0
+                        allowed_actions = (
+                            {"scratchpad.add_note"} if mode == "write-no-recall" else None
+                        )
                         events = []
                         message = run_chat_turn(
                             root=scratch_root,
@@ -720,7 +871,7 @@ def run_dialogue_matrix(
                             user_text=incoming,
                             history=dialogue_history(prior_records, speaker),
                             max_steps=max_steps,
-                            recent_n=recent_n,
+                            recent_n=mode_recent_n,
                             yes=True,
                             max_tool_chars=max_tool_chars,
                             verbose=not quiet,
@@ -737,6 +888,8 @@ def run_dialogue_matrix(
                                 scenario, speaker, turn, turn_count
                             ),
                             trace_io=True,
+                            history_chars=history_chars,
+                            allowed_actions=allowed_actions,
                         )
                         turn_summary = summarize_scratchpad_turn(events, message)
                 except SystemExit as exc:
@@ -811,6 +964,9 @@ def run_dialogue_matrix(
             if session["status"] == "running":
                 session["status"] = "ok"
             session["anchor_coverage"] = anchor_coverage(records, scenario["anchors"])
+            session["literal_probe_evidence"] = literal_probe_evidence(
+                records, scenario["literal_probes"]
+            )
             session["updated_at"] = now_iso()
             transcript_md_path.write_text(
                 transcript_markdown(scenario, session, records), encoding="utf-8"

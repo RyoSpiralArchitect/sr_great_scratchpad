@@ -10,7 +10,7 @@ from .constants import CHAT_PROMPT_TEMPLATE, chat_runtime_system
 from .llm import call_llm_result, completion_token_count, config_with_output_token_limit, extract_json_object, extract_json_object_with_metadata, llm_config_metadata
 from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_recent_turns, render_search_results
 from .storage import now_iso
-from .text import limit_text
+from .text import limit_text, limit_text_tail
 
 def parse_chat_json(text: str) -> dict:
     try:
@@ -31,7 +31,7 @@ def chat_history_text(history: list[dict[str, str]], max_chars: int = 4000) -> s
     for msg in history:
         lines.append(f"{msg['role']}: {msg['content']}")
     text = "\n\n".join(lines).strip()
-    return limit_text(text, max_chars) if text else "(empty)"
+    return limit_text_tail(text, max_chars) if text else "(empty)"
 
 def build_chat_prompt(
     thread_id: str,
@@ -233,6 +233,8 @@ def run_chat_turn(
     per_call_output_token_limit: int | None = None,
     system_addendum: str = "",
     trace_io: bool = False,
+    history_chars: int = 4000,
+    allowed_actions: set[str] | frozenset[str] | None = None,
 ) -> str:
     observations: list[str] = []
     recent_context = render_recent_turns(tdir, n=recent_n, max_chars=1200)
@@ -263,6 +265,8 @@ def run_chat_turn(
         max_model_calls=max_model_calls,
         per_call_output_token_limit=per_call_output_token_limit,
         trace_io=trace_io,
+        history_chars=history_chars,
+        allowed_actions=sorted(allowed_actions) if allowed_actions is not None else None,
         llm=llm_config_metadata(cfg),
     )
     record_trace(
@@ -275,6 +279,12 @@ def run_chat_turn(
     runtime_system = chat_runtime_system(policy)
     if system_addendum.strip():
         runtime_system += "\nRuntime context:\n" + system_addendum.strip() + "\n"
+    if allowed_actions is not None:
+        rendered_actions = ", ".join(sorted(allowed_actions)) or "(none)"
+        runtime_system += (
+            "\nRuntime action restriction: only these scratchpad actions are available: "
+            f"{rendered_actions}. Do not request any other scratchpad action.\n"
+        )
 
     while True:
         if max_model_calls is not None and model_calls >= max(0, max_model_calls):
@@ -328,7 +338,14 @@ def run_chat_turn(
             history=history,
             observations=observations,
             centerline_hints=centerline_hints,
+            history_chars=history_chars,
         )
+        request_system = runtime_system
+        if add_note_requests > 0:
+            request_system += (
+                "\nA scratchpad.add_note request has already been handled in this turn. "
+                "Do not return another action. Return exactly one final JSON object now.\n"
+            )
         if trace_io:
             record_trace(
                 trace_events,
@@ -336,7 +353,7 @@ def run_chat_turn(
                 tool_step=tool_steps,
                 model_calls=model_calls + 1,
                 prompt=prompt,
-                system_prompt=runtime_system,
+                system_prompt=request_system,
                 remaining_output_tokens=remaining_output_tokens,
                 request_output_tokens=request_output_tokens,
                 llm=llm_config_metadata(cfg),
@@ -347,7 +364,7 @@ def run_chat_turn(
                 if request_output_tokens is not None
                 else cfg
             )
-            result = call_llm_result(call_cfg, prompt, runtime_system)
+            result = call_llm_result(call_cfg, prompt, request_system)
         except SystemExit as exc:
             record_trace(
                 trace_events,
@@ -359,7 +376,7 @@ def run_chat_turn(
                 llm={
                     **llm_config_metadata(cfg),
                     "prompt_chars": len(prompt),
-                    "system_prompt_chars": len(runtime_system),
+                    "system_prompt_chars": len(request_system),
                 },
             )
             raise
@@ -466,6 +483,28 @@ def run_chat_turn(
             )
             return message
 
+        action_name = str(obj.get("action", "")).strip()
+        if action_name == "scratchpad.add_note" and add_note_requests > 0:
+            observation = (
+                "scratchpad.add_note skipped: a memory write was already handled "
+                "in this chat turn. Return a final answer next."
+            )
+            record_trace(
+                trace_events,
+                "tool_observation",
+                tool_step=tool_steps,
+                action=action_name,
+                observation=observation,
+                observation_chars=len(observation),
+                duplicate_request=True,
+            )
+            observations.append(
+                f"Duplicate action request: {action_name}\nObservation:\n{observation}"
+            )
+            if verbose:
+                print(limit_text(observation, 800))
+            continue
+
         if tool_steps >= max_steps:
             message = "(chat runtime stopped: max tool steps reached before final answer)"
             record_trace(
@@ -482,13 +521,12 @@ def run_chat_turn(
             )
             return message
 
-        action_name = str(obj.get("action", "")).strip()
         if verbose:
             print(f"[tool] {action_name}")
-        if action_name == "scratchpad.add_note" and add_note_requests > 0:
+        if allowed_actions is not None and action_name not in allowed_actions:
             observation = (
-                "scratchpad.add_note skipped: a memory write was already handled "
-                "in this chat turn. Return a final answer next."
+                f"{action_name or 'scratchpad action'} blocked: this condition allows only "
+                f"{', '.join(sorted(allowed_actions)) or '(no actions)'}"
             )
         elif policy == "read-only" and action_name == "scratchpad.add_note":
             observation = "scratchpad.add_note blocked: read-only policy is active"

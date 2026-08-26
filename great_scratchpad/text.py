@@ -246,3 +246,15 @@ def limit_text(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip() + "\n\n...[truncated]"
+
+def limit_text_tail(text: str, max_chars: int) -> str:
+    """Keep the newest end of a bounded conversation window."""
+    text = text.strip()
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    marker = "...[earlier history truncated]\n\n"
+    if max_chars <= len(marker):
+        return marker[:max_chars].rstrip()
+    return marker + text[-(max_chars - len(marker)):].lstrip()

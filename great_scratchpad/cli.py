@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import shlex
-import sys
 from pathlib import Path
 
 from .audit import audit_turn_md
@@ -779,7 +778,11 @@ def cmd_experiment(args: argparse.Namespace) -> None:
         return
 
     if args.experiment_cmd == "dialogue":
-        conditions = resolve_dialogue_conditions(args.conditions, args.mirror_mixed)
+        conditions = resolve_dialogue_conditions(
+            args.conditions,
+            args.mirror_mixed,
+            preset=args.preset,
+        )
         out_dir = (
             Path(args.out_dir).expanduser()
             if args.out_dir
@@ -803,6 +806,8 @@ def cmd_experiment(args: argparse.Namespace) -> None:
             max_api_calls=args.max_api_calls,
             max_suite_output_tokens=args.max_suite_output_tokens,
             quiet=args.quiet,
+            history_chars=args.history_chars,
+            alternate_starter=args.alternate_starter,
         )
         if args.json:
             print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -1372,8 +1377,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.add_argument("--llm-config", default=None, help="Path to llm.json. Default: ROOT/llm.json")
     sp2.add_argument(
         "--conditions",
-        default=",".join(("raw-raw", "raw-scratchpad", "scratchpad-scratchpad")),
-        help="Comma-separated conditions. Mixed conditions are mirrored by default.",
+        default=None,
+        help="Comma-separated conditions. Defaults come from --preset; mixed conditions are mirrored.",
+    )
+    sp2.add_argument(
+        "--preset",
+        choices=("matrix", "ablation"),
+        default="matrix",
+        help="matrix compares raw/scratchpad pairings; ablation isolates centerline, write, and recall.",
     )
     sp2.add_argument(
         "--no-mirror-mixed",
@@ -1384,6 +1395,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp2.add_argument("--turns", type=int, default=None, help="Utterances per session. Default: scenario value.")
     sp2.add_argument("--replicates", type=int, default=1)
+    sp2.add_argument(
+        "--alternate-starter",
+        action="store_true",
+        help="On even replicates, let Speaker B receive the odd-turn interventions.",
+    )
+    sp2.add_argument(
+        "--history-chars",
+        type=int,
+        default=900,
+        help="Newest ordinary-dialogue characters retained per utterance.",
+    )
     sp2.add_argument(
         "--turn-output-tokens",
         type=int,

@@ -52,3 +52,19 @@ deciding when to search, what to retrieve, and whether a note should be drafted.
 
 This separation keeps experiments reversible. If an agent behaves oddly, the
 stored memory and retrieval evidence remain legible without trusting the agent.
+
+## 6. Factor memory into observable treatments
+
+An experiment should not call every runtime difference "memory." Great
+Scratchpad dialogue runs can separate four stages:
+
+- raw generation
+- deterministic centerline hints without a tool protocol
+- scratchpad writing with all recall paths closed
+- scratchpad writing plus later recall
+
+The ordinary dialogue window is bounded identically and retains the newest
+text, so an early correction can genuinely fall out of context. Provider-visible
+prompts, saved notes, tool observations, and exact-turn literal probes are
+frozen separately. Literal probes are plumbing evidence, not semantic judges;
+quality claims still require transcript inspection and repeated runs.

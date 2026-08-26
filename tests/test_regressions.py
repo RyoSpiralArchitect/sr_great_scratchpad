@@ -15,6 +15,19 @@ import sr_great_scratchpad as gs
 
 
 class GreatScratchpadRegressionTests(unittest.TestCase):
+    def test_chat_history_window_keeps_newest_text(self) -> None:
+        history = [
+            {"role": "user", "content": "OLD-CORRECTION " + "x" * 80},
+            {"role": "assistant", "content": "middle " + "y" * 80},
+            {"role": "user", "content": "LATEST-PROBE"},
+        ]
+
+        rendered = gs.chat_history_text(history, max_chars=90)
+
+        self.assertNotIn("OLD-CORRECTION", rendered)
+        self.assertIn("LATEST-PROBE", rendered)
+        self.assertIn("earlier history truncated", rendered)
+
     def test_raw_markdown_headings_do_not_truncate_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -247,6 +260,53 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             final = next(event for event in events if event["event"] == "final")
             self.assertEqual(final["model_calls"], 1)
             self.assertIn("buffered_final_used", [event["event"] for event in events])
+
+    def test_chat_recovers_duplicate_add_note_after_successful_write(self) -> None:
+        code = (
+            "import json,sys\n"
+            "p=sys.stdin.read()\n"
+            "if 'Duplicate action request' in p:\n"
+            " print(json.dumps({'type':'final','message':'final after duplicate'}))\n"
+            "elif 'Action 1: scratchpad.add_note' in p:\n"
+            " print(json.dumps({'type':'action','action':'scratchpad.add_note','text':'duplicate'}))\n"
+            "else:\n"
+            " print(json.dumps({'type':'action','action':'scratchpad.add_note','text':'first'}))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            cfg = {
+                "backend": "command",
+                "command": [sys.executable, "-S", "-c", code],
+                "timeout": 5,
+            }
+            events: list[dict] = []
+
+            message = gs.run_chat_turn(
+                root=root,
+                tdir=tdir,
+                thread_id="t",
+                cfg=cfg,
+                user_text="write once then answer",
+                history=[],
+                max_steps=1,
+                max_model_calls=3,
+                yes=True,
+                verbose=False,
+                trace_events=events,
+            )
+
+            self.assertEqual(message, "final after duplicate")
+            self.assertEqual(len(list((tdir / "turns").glob("*.md"))), 1)
+            duplicate = next(
+                event
+                for event in events
+                if event["event"] == "tool_observation" and event.get("duplicate_request")
+            )
+            self.assertEqual(duplicate["tool_step"], 1)
+            final = next(event for event in events if event["event"] == "final")
+            self.assertEqual(final["model_calls"], 3)
+            self.assertEqual(final["tool_steps"], 1)
 
     def test_chat_json_repair_recovers_invalid_runtime_output(self) -> None:
         code = (
@@ -1417,6 +1477,186 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
                     max_suite_output_tokens=20000,
                     quiet=True,
                 )
+
+    def test_dialogue_ablation_separates_centerline_write_and_recall(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "scratchpad"
+            out_dir = Path(tmp) / "ablation"
+            parser = gs.build_parser()
+            fake_model = Path("scripts/fake_ablation_dialogue_llm.py").resolve()
+            scenario = Path("scenarios/luna_delayed_recall_ablation.json").resolve()
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "llm-config",
+                    "local",
+                    "--profile",
+                    "fake-ablation",
+                    "--command",
+                    f"{sys.executable} -S {fake_model}",
+                    "--default",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                args.func(args)
+
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "experiment",
+                    "dialogue",
+                    str(scenario),
+                    "--profile",
+                    "fake-ablation",
+                    "--preset",
+                    "ablation",
+                    "--turns",
+                    "12",
+                    "--history-chars",
+                    "500",
+                    "--turn-output-tokens",
+                    "200",
+                    "--max-api-calls",
+                    "96",
+                    "--max-suite-output-tokens",
+                    "10000",
+                    "--out-dir",
+                    str(out_dir),
+                    "--quiet",
+                    "--json",
+                ]
+            )
+            out = io.StringIO()
+            with redirect_stdout(out):
+                args.func(args)
+            result = json.loads(out.getvalue())
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["history_chars"], 500)
+            self.assertEqual(
+                [session["condition"] for session in result["sessions"]],
+                [
+                    "raw-raw",
+                    "centerline-only",
+                    "write-no-recall",
+                    "scratchpad-scratchpad",
+                ],
+            )
+            sessions = {session["condition"]: session for session in result["sessions"]}
+            self.assertEqual(sessions["raw-raw"]["literal_probe_evidence"]["passed"], 0)
+            self.assertEqual(
+                sessions["centerline-only"]["literal_probe_evidence"]["passed"], 0
+            )
+            self.assertEqual(
+                sessions["write-no-recall"]["literal_probe_evidence"]["passed"], 0
+            )
+            self.assertEqual(
+                sessions["scratchpad-scratchpad"]["literal_probe_evidence"]["passed"], 2
+            )
+            self.assertEqual(sessions["write-no-recall"]["memory_writes"], 1)
+            self.assertEqual(sessions["write-no-recall"]["memory_context_injections"], 0)
+            self.assertEqual(sessions["scratchpad-scratchpad"]["memory_writes"], 1)
+            self.assertGreater(
+                sessions["scratchpad-scratchpad"]["memory_context_injections"], 0
+            )
+
+            write_events = gs.load_trace_events(Path(sessions["write-no-recall"]["trace_path"]))
+            full_events = gs.load_trace_events(
+                Path(sessions["scratchpad-scratchpad"]["trace_path"])
+            )
+            raw_events = gs.load_trace_events(Path(sessions["raw-raw"]["trace_path"]))
+            write_probe = next(
+                event
+                for event in write_events
+                if event["event"] == "model_request" and event["dialogue_turn"] == 11
+            )
+            full_probe = next(
+                event
+                for event in full_events
+                if event["event"] == "model_request" and event["dialogue_turn"] == 11
+            )
+            raw_probe = next(
+                event
+                for event in raw_events
+                if event["event"] == "model_request" and event["dialogue_turn"] == 11
+            )
+            self.assertNotIn("個体内の異質性を種間差と取り違えない", write_probe["prompt"])
+            self.assertIn("個体内の異質性を種間差と取り違えない", full_probe["prompt"])
+            self.assertNotIn("重要な補正を置く", raw_probe["prompt"])
+
+    def test_dialogue_alternate_starter_counterbalances_even_replicates(self) -> None:
+        plan = gs.dialogue_budget_plan(
+            ["raw-scratchpad"],
+            turns=3,
+            replicates=2,
+            turn_output_tokens=100,
+            max_steps=1,
+            json_repair_steps=1,
+            alternate_starter=True,
+        )
+        self.assertEqual(plan["mode_turns"]["raw"], 3)
+        self.assertEqual(plan["mode_turns"]["scratchpad"], 3)
+        self.assertEqual(plan["worst_api_calls"], 12)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "scratchpad"
+            out_dir = Path(tmp) / "parity"
+            parser = gs.build_parser()
+            fake_model = Path("scripts/fake_ablation_dialogue_llm.py").resolve()
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "llm-config",
+                    "local",
+                    "--profile",
+                    "fake-parity",
+                    "--command",
+                    f"{sys.executable} -S {fake_model}",
+                    "--default",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                args.func(args)
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "experiment",
+                    "dialogue",
+                    "scenarios/luna_delayed_recall_ablation.json",
+                    "--profile",
+                    "fake-parity",
+                    "--conditions",
+                    "raw",
+                    "--turns",
+                    "2",
+                    "--replicates",
+                    "2",
+                    "--alternate-starter",
+                    "--turn-output-tokens",
+                    "100",
+                    "--max-api-calls",
+                    "4",
+                    "--max-suite-output-tokens",
+                    "400",
+                    "--out-dir",
+                    str(out_dir),
+                    "--quiet",
+                    "--json",
+                ]
+            )
+            out = io.StringIO()
+            with redirect_stdout(out):
+                args.func(args)
+            result = json.loads(out.getvalue())
+
+            self.assertEqual(
+                [session["starting_speaker"] for session in result["sessions"]],
+                ["A", "B"],
+            )
 
 
 if __name__ == "__main__":
