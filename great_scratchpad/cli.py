@@ -180,6 +180,49 @@ def cmd_llm_config_show(args: argparse.Namespace) -> None:
         return
     print(path.read_text(encoding="utf-8"))
 
+def _store_common_provider_options(cfg: dict, args: argparse.Namespace, *, max_tokens_key: str) -> None:
+    if getattr(args, "temperature", None) is not None:
+        cfg["temperature"] = args.temperature
+    if getattr(args, "top_p", None) is not None:
+        cfg["top_p"] = args.top_p
+    if getattr(args, "seed", None) is not None:
+        cfg["seed"] = args.seed
+    if getattr(args, "stop", None):
+        cfg["stop"] = args.stop
+    max_tokens = getattr(args, max_tokens_key, None)
+    if max_tokens is not None:
+        cfg[max_tokens_key] = max_tokens
+    json_mode = getattr(args, "json_mode", "off")
+    if json_mode != "off":
+        cfg["json_mode"] = json_mode
+
+def cmd_llm_config_openai(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    ensure_root(root)
+    path = llm_config_path(root, args.config)
+    data = read_llm_config_document(path)
+    profile = args.profile
+    cfg = {
+        "backend": "openai",
+        "adapter": args.adapter,
+        "base_url": args.base_url,
+        "api_key_env": args.api_key_env,
+        "model": args.model,
+        "timeout": args.timeout,
+    }
+    _store_common_provider_options(cfg, args, max_tokens_key="max_output_tokens")
+    if args.reasoning_effort:
+        cfg["reasoning_effort"] = args.reasoning_effort
+    if args.reasoning_mode:
+        cfg["reasoning_mode"] = args.reasoning_mode
+    if args.reasoning_context:
+        cfg["reasoning_context"] = args.reasoning_context
+    data["profiles"][profile] = cfg
+    if args.default or not data.get("default_profile"):
+        data["default_profile"] = profile
+    write_llm_config_document(path, data)
+    print(f"Wrote OpenAI LLM profile {profile!r}: {path}")
+
 def cmd_llm_config_provider(args: argparse.Namespace) -> None:
     root = root_path(args)
     ensure_root(root)
@@ -191,18 +234,11 @@ def cmd_llm_config_provider(args: argparse.Namespace) -> None:
         "base_url": args.base_url,
         "api_key_env": args.api_key_env,
         "model": args.model,
-        "temperature": args.temperature,
-        "max_tokens": args.max_tokens,
         "timeout": args.timeout,
     }
-    if args.top_p is not None:
-        cfg["top_p"] = args.top_p
-    if args.seed is not None:
-        cfg["seed"] = args.seed
-    if args.stop:
-        cfg["stop"] = args.stop
-    if args.json_mode != "off":
-        cfg["json_mode"] = args.json_mode
+    if args.adapter != "chat-completions":
+        cfg["adapter"] = args.adapter
+    _store_common_provider_options(cfg, args, max_tokens_key="max_tokens")
     data["profiles"][profile] = cfg
     if args.default or not data.get("default_profile"):
         data["default_profile"] = profile
@@ -1154,11 +1190,31 @@ def build_parser() -> argparse.ArgumentParser:
     sp2 = llm_sub.add_parser("show", help="Print LLM config.")
     sp2.set_defaults(func=cmd_llm_config_show)
 
+    sp2 = llm_sub.add_parser("openai", help="Configure an OpenAI API profile with automatic adapter selection.")
+    sp2.add_argument("--profile", default="openai-5.6-luna")
+    sp2.add_argument("--base-url", default="https://api.openai.com/v1", help="OpenAI API base URL or full /responses URL.")
+    sp2.add_argument("--api-key-env", default="OPENAI_API_KEY", help="Environment variable containing the API key.")
+    sp2.add_argument("--model", default="gpt-5.6-luna")
+    sp2.add_argument("--adapter", choices=["auto", "responses", "chat-completions"], default="auto")
+    sp2.add_argument("--temperature", type=float, default=None)
+    sp2.add_argument("--max-output-tokens", type=int, default=900)
+    sp2.add_argument("--top-p", type=float, default=None)
+    sp2.add_argument("--seed", type=int, default=None)
+    sp2.add_argument("--stop", action="append", default=[], help="Stop sequence. Repeat for multiple stops.")
+    sp2.add_argument("--json-mode", choices=["off", "json_object"], default="json_object")
+    sp2.add_argument("--reasoning-effort", choices=["", "none", "low", "medium", "high", "xhigh", "max"], default="medium")
+    sp2.add_argument("--reasoning-mode", choices=["", "pro"], default="")
+    sp2.add_argument("--reasoning-context", choices=["", "auto", "all_turns", "current_turn"], default="")
+    sp2.add_argument("--timeout", type=float, default=120)
+    sp2.add_argument("--default", action="store_true", help="Make this the default profile.")
+    sp2.set_defaults(func=cmd_llm_config_openai)
+
     sp2 = llm_sub.add_parser("provider", help="Configure an OpenAI-compatible provider API.")
     sp2.add_argument("--profile", default="provider")
     sp2.add_argument("--base-url", required=True, help="Base URL or full /chat/completions URL.")
     sp2.add_argument("--api-key-env", default="", help="Environment variable containing the API key.")
     sp2.add_argument("--model", required=True)
+    sp2.add_argument("--adapter", choices=["chat-completions", "responses", "auto"], default="chat-completions")
     sp2.add_argument("--temperature", type=float, default=0.2)
     sp2.add_argument("--max-tokens", type=int, default=900)
     sp2.add_argument("--top-p", type=float, default=None)

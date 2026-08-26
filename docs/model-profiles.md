@@ -1,17 +1,59 @@
 # Model profile examples
 
-Great Scratchpad can use either an OpenAI-compatible HTTP API profile or a
-local command profile. API profiles are usually easier to observe because
-provider usage can be captured in chat traces. Command profiles are useful when
-you want the simplest possible local process.
+Great Scratchpad can use either an OpenAI API profile, an OpenAI-compatible
+HTTP profile, or a local command profile. API profiles are usually easier to
+observe because provider usage can be captured in chat traces. Command profiles
+are useful when you want the simplest possible local process.
 
 The chat runtime expects the model to return JSON objects. Use low temperature
 for early experiments and keep `--json-repair-steps` enabled while comparing
 models.
 
+## OpenAI profiles
+
+Use `llm-config openai` for the OpenAI API. These profiles store
+`backend=openai` and `adapter=auto`, so GPT-5.x / GPT-5.6 models use the
+Responses API while older models can still be routed by adapter rules.
+
+### GPT-5.6 Luna
+
+```bash
+export OPENAI_API_KEY="..."
+
+python3 -S sr_great_scratchpad.py llm-config openai \
+  --profile openai-5.6-luna \
+  --model "gpt-5.6-luna" \
+  --reasoning-effort medium \
+  --json-mode json_object \
+  --default
+```
+
+### GPT-5.6 Terra or Sol
+
+Swap the model and profile names to test higher-capability tiers:
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config openai \
+  --profile openai-5.6-terra \
+  --model "gpt-5.6-terra" \
+  --reasoning-effort medium
+
+python3 -S sr_great_scratchpad.py llm-config openai \
+  --profile openai-5.6-sol \
+  --model "gpt-5.6-sol" \
+  --reasoning-effort high
+```
+
+Set `--reasoning-mode pro` for quality-first GPT-5.6 experiments. Keep it off
+for latency and cost baselines.
+
 ## OpenAI-compatible HTTP profiles
 
 ### Generic provider
+
+Generic provider profiles default to the Chat Completions adapter to preserve
+legacy behavior. Add `--adapter auto` or `--adapter responses` only when the
+provider supports the Responses API shape.
 
 ```bash
 export PROVIDER_API_KEY="..."

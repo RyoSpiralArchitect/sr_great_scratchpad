@@ -106,6 +106,19 @@ sr:monday-meawness> audit
 
 LLMはannotationの「確定者」ではなく draft producer として使います。provider APIもlocal LLMも `llm.json` のprofileとして設定し、`annotate` またはREPLの `annotate` から呼び出します。実モデル向けの詳しいprofile例は [`docs/model-profiles.md`](docs/model-profiles.md) にあります。
 
+OpenAI GPT-5.6 / Responses API:
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config openai \
+  --profile openai-5.6-luna \
+  --model gpt-5.6-luna \
+  --reasoning-effort medium \
+  --json-mode json_object \
+  --default
+```
+
+`openai` profile は `adapter=auto` です。GPT-5.x / GPT-5.6 系は Responses API に向かい、既存の provider profile は従来通り Chat Completions 互換サーバーに向かいます。
+
 OpenAI-compatible provider API:
 
 ```bash
@@ -366,6 +379,19 @@ The plan is to learn the interaction before freezing the product surface: observ
 ### LLM Connection
 
 The LLM is treated as a draft producer, not as an authority. Provider APIs and local LLM commands are both configured as profiles in `llm.json`, then used by `annotate` or the REPL `annotate` command. See [`docs/model-profiles.md`](docs/model-profiles.md) for richer real-model profile examples.
+
+OpenAI GPT-5.6 / Responses API:
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config openai \
+  --profile openai-5.6-luna \
+  --model gpt-5.6-luna \
+  --reasoning-effort medium \
+  --json-mode json_object \
+  --default
+```
+
+`openai` profiles use `adapter=auto`: GPT-5.x / GPT-5.6 models route through the Responses API, while legacy-compatible provider profiles continue using Chat Completions.
 
 OpenAI-compatible provider API:
 
