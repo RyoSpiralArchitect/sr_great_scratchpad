@@ -108,6 +108,7 @@ def append_trace_events(path: Path, events: list[dict]) -> None:
 def llm_trace(result: dict) -> dict:
     return {
         "backend": result.get("backend", ""),
+        "adapter": result.get("adapter", ""),
         "profile": result.get("profile", ""),
         "model": result.get("model", ""),
         "model_path": result.get("model_path", ""),

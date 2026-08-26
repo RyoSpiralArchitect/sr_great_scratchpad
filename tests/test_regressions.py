@@ -528,6 +528,133 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_openai_auto_adapter_uses_responses_for_gpt_5_6(self) -> None:
+        requests: list[dict] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                requests.append({"path": self.path, "body": body})
+                content = json.dumps({"type": "final", "message": "responses final"})
+                payload = {
+                    "id": "resp_fake",
+                    "model": "gpt-5.6-luna",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": content}],
+                        }
+                    ],
+                    "usage": {"input_tokens": 11, "output_tokens": 5, "total_tokens": 16},
+                }
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *_args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                tdir = gs.ensure_thread_dirs(root, "t")
+                cfg = {
+                    "backend": "openai",
+                    "adapter": "auto",
+                    "profile": "openai-5.6-luna",
+                    "base_url": f"http://127.0.0.1:{server.server_port}/v1",
+                    "model": "gpt-5.6-luna",
+                    "max_output_tokens": 321,
+                    "top_p": 0.8,
+                    "seed": 99,
+                    "stop": ["STOP"],
+                    "json_mode": "json_object",
+                    "reasoning_effort": "low",
+                    "timeout": 5,
+                }
+                events: list[dict] = []
+
+                message = gs.run_chat_turn(
+                    root=root,
+                    tdir=tdir,
+                    thread_id="t",
+                    cfg=cfg,
+                    user_text="provider please",
+                    history=[],
+                    verbose=False,
+                    trace_events=events,
+                )
+
+                self.assertEqual(message, "responses final")
+                self.assertEqual(requests[0]["path"], "/v1/responses")
+                body = requests[0]["body"]
+                self.assertEqual(body["model"], "gpt-5.6-luna")
+                self.assertEqual(body["max_output_tokens"], 321)
+                self.assertEqual(body["top_p"], 0.8)
+                self.assertEqual(body["seed"], 99)
+                self.assertEqual(body["stop"], ["STOP"])
+                self.assertEqual(body["text"], {"format": {"type": "json_object"}})
+                self.assertEqual(body["reasoning"], {"effort": "low"})
+                model_event = next(event for event in events if event["event"] == "model_output")
+                self.assertEqual(model_event["llm"]["adapter"], "openai-responses")
+                self.assertEqual(model_event["llm"]["usage"]["prompt_tokens"], 11)
+                self.assertEqual(model_event["llm"]["usage"]["completion_tokens"], 5)
+                self.assertEqual(model_event["llm"]["usage"]["total_tokens"], 16)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_provider_auto_adapter_keeps_legacy_chat_by_default(self) -> None:
+        self.assertEqual(
+            gs.resolve_llm_adapter({"backend": "openai-compatible", "model": "gpt-5.6-luna"}),
+            "openai-chat-completions",
+        )
+        self.assertEqual(
+            gs.resolve_llm_adapter({"backend": "openai-compatible", "adapter": "auto", "model": "gpt-5.6-luna"}),
+            "openai-responses",
+        )
+        self.assertEqual(
+            gs.endpoint_url({"base_url": "https://api.example.com/v1/chat/completions"}, "responses"),
+            "https://api.example.com/v1/responses",
+        )
+
+    def test_openai_config_cli_writes_auto_responses_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parser = gs.build_parser()
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "llm-config",
+                    "openai",
+                    "--profile",
+                    "openai-5.6-terra",
+                    "--model",
+                    "gpt-5.6-terra",
+                    "--reasoning-effort",
+                    "high",
+                    "--default",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                args.func(args)
+
+            cfg = gs.load_llm_config(root, None, "openai-5.6-terra")
+            self.assertEqual(cfg["backend"], "openai")
+            self.assertEqual(cfg["adapter"], "auto")
+            self.assertEqual(cfg["api_key_env"], "OPENAI_API_KEY")
+            self.assertEqual(cfg["model"], "gpt-5.6-terra")
+            self.assertEqual(cfg["reasoning_effort"], "high")
+            self.assertEqual(gs.resolve_llm_adapter(cfg), "openai-responses")
+
     def test_smoke_cli_writes_trace_and_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
