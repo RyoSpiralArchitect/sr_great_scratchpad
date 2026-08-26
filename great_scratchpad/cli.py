@@ -13,6 +13,7 @@ from .dialogue import resolve_dialogue_conditions, run_dialogue_matrix
 from .experiments import add_run_id, default_manifest_path, make_run_id, run_scenario_profiles, trace_summary, write_manifest
 from .llm import call_llm_result, draft_annotation, extract_json_object, llm_config_metadata, print_annotation
 from .memory import add_turn, apply_review_item, apply_safe_review_items, audit_review_item, build_context_pack, compact_one_range, edit_review_item, iter_review_items, load_review_item, recent_turn_files, reject_review_item, render_audit, render_recent_turns, render_review_item, retrieve, review_item_is_safe
+from .semantics import analyze_dialogue_semantics
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
 from .trace import load_trace_events, trace_centerline, trace_centerline_markdown, trace_report_data, trace_report_markdown, trace_show
@@ -777,6 +778,24 @@ def cmd_experiment(args: argparse.Namespace) -> None:
             )
         return
 
+    if args.experiment_cmd == "dialogue-nlp":
+        result = analyze_dialogue_semantics(
+            run_dir=Path(args.run_dir),
+            taxonomy_path=Path(args.taxonomy),
+            out_prefix=Path(args.out_prefix) if args.out_prefix else None,
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+        print(f"Wrote semantic NLP report: {result['output']['report_path']}")
+        print(f"Wrote semantic NLP data: {result['output']['json_path']}")
+        for contrast in result["contrasts"]:
+            print(
+                f"{contrast['id']}\tn={contrast['replicates']}\t"
+                f"frame_delta={contrast['frame_score_delta']:.3f}"
+            )
+        return
+
     if args.experiment_cmd == "dialogue":
         conditions = resolve_dialogue_conditions(
             args.conditions,
@@ -1365,6 +1384,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.add_argument("--max-tool-chars", type=int, default=6000, help="Maximum chars returned from each scratchpad action.")
     sp2.add_argument("--json-repair-steps", type=int, default=1, help="Retry invalid JSON runtime outputs up to N times.")
     sp2.add_argument("--quiet", action="store_true", help="Do not print tool action progress.")
+    sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")
+    sp2.set_defaults(func=cmd_experiment)
+
+    sp2 = experiment_sub.add_parser(
+        "dialogue-nlp",
+        help="Measure frozen dialogue and note semantics with auditable character n-gram NLP.",
+    )
+    sp2.add_argument("run_dir", help="Completed dialogue run directory containing suite_manifest.json.")
+    sp2.add_argument("--taxonomy", required=True, help="Frozen semantic taxonomy JSON path.")
+    sp2.add_argument(
+        "--out-prefix",
+        default=None,
+        help="Output prefix. Default: RUN_DIR/semantic_analysis",
+    )
     sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")
     sp2.set_defaults(func=cmd_experiment)
 

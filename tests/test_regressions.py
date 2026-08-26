@@ -1586,6 +1586,39 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertIn("個体内の異質性を種間差と取り違えない", full_probe["prompt"])
             self.assertNotIn("重要な補正を置く", raw_probe["prompt"])
 
+            semantic_prefix = Path(tmp) / "semantic" / "analysis"
+            semantic = gs.analyze_dialogue_semantics(
+                run_dir=out_dir,
+                taxonomy_path=Path(
+                    "scenarios/luna_delayed_recall_semantic_taxonomy.json"
+                ),
+                out_prefix=semantic_prefix,
+            )
+            self.assertEqual(semantic["corpus"]["utterances"], 48)
+            self.assertEqual(semantic["corpus"]["notes"], 2)
+            targets = {
+                item["condition"]: item
+                for item in semantic["targets"]
+                if item["target_id"] == "delayed-correction-turn-11"
+            }
+            self.assertFalse(targets["write-no-recall"]["note_visible"])
+            self.assertTrue(targets["scratchpad-scratchpad"]["note_visible"])
+            self.assertGreater(
+                targets["scratchpad-scratchpad"]["frame_score"],
+                targets["write-no-recall"]["frame_score"],
+            )
+            self.assertGreater(semantic["contrasts"][0]["frame_score_delta"], 0)
+            first_json = semantic_prefix.with_suffix(".json").read_bytes()
+            gs.analyze_dialogue_semantics(
+                run_dir=out_dir,
+                taxonomy_path=Path(
+                    "scenarios/luna_delayed_recall_semantic_taxonomy.json"
+                ),
+                out_prefix=semantic_prefix,
+            )
+            self.assertEqual(first_json, semantic_prefix.with_suffix(".json").read_bytes())
+            self.assertTrue(semantic_prefix.with_suffix(".md").exists())
+
     def test_dialogue_alternate_starter_counterbalances_even_replicates(self) -> None:
         plan = gs.dialogue_budget_plan(
             ["raw-scratchpad"],

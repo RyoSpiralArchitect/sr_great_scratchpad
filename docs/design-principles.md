@@ -68,3 +68,14 @@ text, so an early correction can genuinely fall out of context. Provider-visible
 prompts, saved notes, tool observations, and exact-turn literal probes are
 frozen separately. Literal probes are plumbing evidence, not semantic judges;
 quality claims still require transcript inspection and repeated runs.
+
+## 7. Keep generation and assessment identities separate
+
+A frozen dialogue is generation evidence. A semantic taxonomy, parser, or
+scorer is an assessment identity layered over that evidence. Changing an
+assessment should not regenerate provider outputs.
+
+The dependency-free semantic baseline uses character n-gram TF-IDF against
+versioned prototypes. It records both the taxonomy hash and analyzer hash,
+keeps literal probes separate from prototype scores, and reports paired
+treatment deltas without declaring an automatic quality winner.

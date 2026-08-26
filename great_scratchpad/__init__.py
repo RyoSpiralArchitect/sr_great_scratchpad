@@ -9,6 +9,7 @@ from .dialogue import *
 from .experiments import *
 from .llm import *
 from .memory import *
+from .semantics import analyze_dialogue_semantics as analyze_dialogue_semantics
 from .storage import *
 from .text import *
 from .trace import *

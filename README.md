@@ -294,6 +294,16 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
 
 `ablation` は `raw/raw`、`centerline-only`、`write-no-recall`、`scratchpad/scratchpad` の4条件です。全条件の通常会話履歴は最新側から同じ文字数だけ残します。`write-no-recall` は note を保存しますが、保存済みnoteの自動注入と全read actionを閉じるため、「書いたこと」自体と「後で読めたこと」を分離できます。literal probe は凍結turnでの語の出現だけを報告し、意味的な勝者判定には使いません。大きな反復を始める前に、`--replicates 1` と対応する低い上限で校正してください。
 
+凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue-nlp \
+  .great_scratchpad/runs/YOUR_DIALOGUE_RUN \
+  --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json
+```
+
+生成scenarioと評価taxonomyは別identityとしてSHA-256を記録します。reportは意味フレーム占有率、note内容、反復類似度、noteのprovider-visible promptへの包含、note→遅延応答類似度、paired treatment差を分けて出力します。これは監査可能な語彙・意味測定であり、LLM judgeや真偽判定ではありません。反復拡張の事前計画は [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md) にあります。
+
 ### Live run
 
 挙動を見ながら育てるための小さな実行例を用意しています。
@@ -588,6 +598,16 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
 ```
 
 The ablation conditions are `raw/raw`, `centerline-only`, `write-no-recall`, and `scratchpad/scratchpad`. Every condition receives the same newest-first ordinary-dialogue window. Write-no-recall persists notes but disables automatic note injection and all read actions, separating the act of writing from later availability. Frozen-turn literal probes report exact lexical evidence only; they do not declare a semantic winner. Calibrate with one replicate and proportionally lower caps before a larger run.
+
+Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue-nlp \
+  .great_scratchpad/runs/YOUR_DIALOGUE_RUN \
+  --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json
+```
+
+Generation scenarios and assessment taxonomies retain separate SHA-256 identities. The report separates semantic-frame occupancy, note contents, repetition similarity, provider-visible note containment, note-to-delayed-response similarity, and paired treatment contrasts. This is an auditable lexical-semantic measure, not an LLM judge or factuality scorer. See [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md) for the preregistered replication path.
 
 ### Live Run
 
