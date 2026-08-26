@@ -50,8 +50,8 @@ Worst-case preflight:
 - 16 sessions, 192 utterances
 - 384 API calls
 - 115,200 accepted output tokens
-- 28,800 JSON-repair reserve tokens
-- 144,000 provider output tokens including the reserve
+- 38,400 JSON-repair reserve tokens
+- 153,600 provider output tokens including the reserve
 
 Projection from calibration 3, not a cap:
 
@@ -62,7 +62,7 @@ Projection from calibration 3, not a cap:
 Validity gate before interpreting behavior:
 
 - all 16 sessions complete
-- zero JSON parse failures
+- zero unrecovered JSON parse failures or stopped turns; recovered failures remain reported as protocol cost
 - every provider-visible prompt and trace is frozen
 - note-visibility checks pass in all paired writing sessions
 - at least three of four paired replicates contain a valid pre-probe correction note in both writing conditions
@@ -95,8 +95,8 @@ Worst-case total at n=8:
 - 32 sessions, 384 utterances
 - 768 API calls
 - 230,400 accepted output tokens
-- 57,600 JSON-repair reserve tokens
-- 288,000 provider output tokens including the reserve
+- 76,800 JSON-repair reserve tokens
+- 307,200 provider output tokens including the reserve
 
 Calibration-based projection at n=8:
 
@@ -106,7 +106,7 @@ Calibration-based projection at n=8:
 
 Campaign total if both stages run:
 
-- worst case: 1,152 calls, 345,600 accepted output tokens, and 432,000 provider output tokens including repair reserves
+- worst case: 1,152 calls, 345,600 accepted output tokens, and 460,800 provider output tokens including repair reserves
 - calibration projection: about 660 calls, 842,892 prompt tokens, and 86,772 output tokens
 
 Use the same deterministic four-way condition-order rotation for both cycles of

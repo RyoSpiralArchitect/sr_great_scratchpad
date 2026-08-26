@@ -290,7 +290,7 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
   --rotate-condition-order \
   --turn-output-tokens 600 \
   --max-api-calls 384 \
-  --max-suite-output-tokens 144000
+  --max-suite-output-tokens 153600
 ```
 
 `ablation` は `raw/raw`、`centerline-only`、`write-no-recall`、`scratchpad/scratchpad` の4条件です。`--rotate-condition-order` はreplicateごとに順序を巡回し、n=4では各条件を各実行位置へ一度ずつ置きます。全条件の通常会話履歴は最新側から同じ文字数だけ残します。`write-no-recall` は note を保存しますが、保存済みnoteの自動注入と全read actionを閉じるため、「書いたこと」自体と「後で読めたこと」を分離できます。600-token枠はvalidなaction/finalで共有し、invalid JSONは別の有界repair reserveへ計上します。literal probe は凍結turnでの語の出現だけを報告し、意味的な勝者判定には使いません。大きな反復を始める前に、`--replicates 1` と対応する低い上限で校正してください。
@@ -596,7 +596,7 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
   --rotate-condition-order \
   --turn-output-tokens 600 \
   --max-api-calls 384 \
-  --max-suite-output-tokens 144000
+  --max-suite-output-tokens 153600
 ```
 
 The ablation conditions are `raw/raw`, `centerline-only`, `write-no-recall`, and `scratchpad/scratchpad`. `--rotate-condition-order` cycles the order by replicate, placing every condition in every execution position once at n=4. Every condition receives the same newest-first ordinary-dialogue window. Write-no-recall persists notes but disables automatic note injection and all read actions, separating the act of writing from later availability. The 600-token allowance is pooled across valid actions and finals; invalid JSON is charged to a separate bounded repair reserve. Frozen-turn literal probes report exact lexical evidence only; they do not declare a semantic winner. Calibrate with one replicate and proportionally lower caps before a larger run.

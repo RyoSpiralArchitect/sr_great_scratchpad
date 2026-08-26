@@ -199,7 +199,11 @@ def dialogue_budget_plan(
         raise SystemExit("max_steps and json_repair_steps must be non-negative.")
 
     scratchpad_call_cap = 1 + max_steps + json_repair_steps
-    scratchpad_call_output_tokens = max(1, turn_output_tokens // (1 + max_steps))
+    scratchpad_final_reserve_tokens = max(1, turn_output_tokens // 3)
+    scratchpad_call_output_tokens = max(
+        1,
+        turn_output_tokens - scratchpad_final_reserve_tokens,
+    )
     worst_api_calls = 0
     mode_turns = {mode: 0 for modes in DIALOGUE_CONDITIONS.values() for mode in modes}
     sessions = len(conditions) * replicates
@@ -240,6 +244,7 @@ def dialogue_budget_plan(
         "max_provider_output_tokens_suite": accepted_output_tokens + repair_output_tokens,
         "scratchpad_model_calls_per_turn": scratchpad_call_cap,
         "scratchpad_output_tokens_per_call": scratchpad_call_output_tokens,
+        "scratchpad_final_reserve_tokens": scratchpad_final_reserve_tokens,
         "worst_api_calls": worst_api_calls,
         "condition_orders": condition_orders,
     }
@@ -350,7 +355,7 @@ Fixed agenda:
 Opening question shared by both speakers:
 {scenario['opening']}
 
-Respond naturally in Japanese to the peer. Keep the final conversational message complete and concise: 2 to 4 sentences and no more than {scenario['max_reply_chars']} Japanese characters. If using scratchpad.add_note, keep all field values terse so the note leaves generation budget for the final message. Do not mention experiments, roles, token budgets, JSON protocol, or the scratchpad. Use scratchpad memory only when it improves continuity or preserves a correction, analogy boundary, center shift, or unresolved question. This is utterance {turn} of {turns}."""
+Respond naturally in Japanese to the peer. Keep the final conversational message complete and concise: 2 to 4 sentences and no more than {scenario['max_reply_chars']} Japanese characters. If using scratchpad.add_note, keep text under 120 Japanese characters and every other field under 40; omit detail rather than lengthening the JSON. Do not mention experiments, roles, token budgets, JSON protocol, or the scratchpad. Use scratchpad memory only when it improves continuity or preserves a correction, analogy boundary, center shift, or unresolved question. This is utterance {turn} of {turns}."""
 
 
 def call_raw_dialogue_turn(
@@ -657,7 +662,8 @@ def dialogue_report_markdown(result: dict) -> str:
         f"- Utterances per session: {plan['turns_per_session']}",
         f"- Shared output budget per utterance: {plan['turn_output_tokens']} tokens",
         f"- Recent dialogue window: {result['history_chars']} characters (newest text retained)",
-        f"- Scratchpad per-call reserve cap: {plan['scratchpad_output_tokens_per_call']} tokens",
+        f"- Scratchpad action/repair per-call cap: {plan['scratchpad_output_tokens_per_call']} tokens",
+        f"- Scratchpad final reserve: {plan['scratchpad_final_reserve_tokens']} tokens",
         f"- Accepted-output allowance: {plan['max_output_tokens_suite']} tokens",
         f"- JSON-repair reserve: {plan['max_repair_output_tokens_suite']} tokens",
         f"- Provider-output ceiling: {plan['max_provider_output_tokens_suite']} tokens",

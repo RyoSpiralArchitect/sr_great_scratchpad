@@ -1461,8 +1461,10 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
         )
         self.assertEqual(plan["worst_api_calls"], 64)
         self.assertEqual(plan["max_output_tokens_suite"], 15360)
-        self.assertEqual(plan["max_repair_output_tokens_suite"], 3840)
-        self.assertEqual(plan["max_provider_output_tokens_suite"], 19200)
+        self.assertEqual(plan["scratchpad_output_tokens_per_call"], 320)
+        self.assertEqual(plan["scratchpad_final_reserve_tokens"], 160)
+        self.assertEqual(plan["max_repair_output_tokens_suite"], 5120)
+        self.assertEqual(plan["max_provider_output_tokens_suite"], 20480)
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(SystemExit, "worst-case API calls"):
                 gs.run_dialogue_matrix(
@@ -1528,7 +1530,7 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
                     "--max-api-calls",
                     "96",
                     "--max-suite-output-tokens",
-                    "12000",
+                    "13000",
                     "--out-dir",
                     str(out_dir),
                     "--quiet",

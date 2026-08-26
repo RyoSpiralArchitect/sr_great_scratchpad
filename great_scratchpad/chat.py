@@ -405,7 +405,9 @@ def run_chat_turn(
                 observations.append(
                     "The previous model output was not valid JSON. "
                     f"Parse error: {exc}. "
-                    "Return exactly one JSON object using either a scratchpad action or final message. "
+                    "Return exactly one shorter JSON object using either a scratchpad action or final message. "
+                    "Keep the entire object under 500 characters, shorten optional action fields, "
+                    "and do not append a second object. "
                     f"Previous output excerpt:\n{limit_text(raw_output, 1200)}"
                 )
                 continue
