@@ -120,6 +120,7 @@ To answer the user, return:
 {"type":"final","message":"..."}
 
 Rules:
+- Return only one action or one final object per response. After an action, stop and wait for its observation before returning a final object.
 - Use scratchpad tools when memory would help keep the topic centered.
 - Do not invent memory. Use retrieved source paths when relying on scratchpad material.
 - scratchpad.add_note should store externally visible trajectory notes, not hidden reasoning.
@@ -132,7 +133,7 @@ ACTION_POLICIES = {
     "balanced": "Use scratchpad tools when they materially improve continuity. Prefer search or recent before pack. Queue or ask before writing notes.",
     "conservative": "Prefer answering from current context and recent scratchpad first. Search only when the user references prior thread context or the center pin is ambiguous. Avoid writing notes unless explicitly useful.",
     "active": "Actively search when a message references prior concepts, coined terms, topic drift, or unresolved questions. Use pack when a single search result is too thin.",
-    "writer": "Use search/recent for grounding, and draft scratchpad.add_note when the current turn creates a reusable trajectory anchor, especially user corrections, analogy mismatches, center shifts, or checkpoint moments. Keep writes concise and externally visible.",
+    "writer": "Use search/recent for grounding. When centerline hints say should_queue_note: True, call scratchpad.add_note exactly once before the final answer unless the same note is already present. Keep writes concise and externally visible.",
     "read-only": "Use only scratchpad.search, scratchpad.recent, scratchpad.pack, and scratchpad.audit. Do not call scratchpad.add_note.",
 }
 

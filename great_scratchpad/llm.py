@@ -29,19 +29,58 @@ def clip_text(text: str, max_chars: int = 4000) -> str:
         return text
     return text[:max_chars].rstrip() + "\n...[truncated]"
 
-def extract_json_object(text: str) -> dict:
-    text = text.strip()
+def extract_json_object_with_metadata(text: str) -> tuple[dict, dict]:
+    stripped = text.strip()
     try:
-        value = json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("LLM output did not contain a JSON object.") from None
-        value = json.loads(text[start:end + 1])
+        value = json.loads(stripped)
+    except json.JSONDecodeError as strict_error:
+        decoder = json.JSONDecoder()
+        starts = [match.start() for match in re.finditer(r"\{", stripped)]
+        for start in starts:
+            try:
+                candidate, end = decoder.raw_decode(stripped, start)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(candidate, dict):
+                continue
+            prefix = stripped[:start].strip()
+            trailing = stripped[end:].strip()
+            trailing_object = None
+            if trailing:
+                for trailing_start in [match.start() for match in re.finditer(r"\{", trailing)]:
+                    try:
+                        candidate_trailing, _trailing_end = decoder.raw_decode(
+                            trailing, trailing_start
+                        )
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(candidate_trailing, dict):
+                        trailing_object = candidate_trailing
+                        break
+            return candidate, {
+                "mode": "first_complete_object",
+                "recovered": True,
+                "prefix_chars": len(prefix),
+                "trailing_chars": len(trailing),
+                "trailing_excerpt": clip_text(trailing, 600) if trailing else "",
+                "trailing_object": trailing_object,
+                "strict_error": str(strict_error),
+            }
+        raise ValueError("LLM output did not contain a complete JSON object.") from None
 
     if not isinstance(value, dict):
         raise ValueError("LLM output JSON must be an object.")
+    return value, {
+        "mode": "strict",
+        "recovered": False,
+        "prefix_chars": 0,
+        "trailing_chars": 0,
+        "trailing_excerpt": "",
+        "trailing_object": None,
+    }
+
+def extract_json_object(text: str) -> dict:
+    value, _metadata = extract_json_object_with_metadata(text)
     return value
 
 def normalize_annotation(value: dict) -> dict[str, str]:
@@ -85,6 +124,45 @@ def estimated_usage(prompt: str, completion: str) -> dict:
         "estimated": True,
         "estimator": "great_scratchpad_chars_words_v1",
     }
+
+def completion_token_count(usage: dict | None) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    for key in ("completion_tokens", "output_tokens"):
+        try:
+            value = int(usage.get(key, 0))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0
+
+def config_with_output_token_limit(cfg: dict, limit: int) -> dict:
+    if limit <= 0:
+        raise ValueError("Output token limit must be positive.")
+
+    out = dict(cfg)
+    configured: list[int] = []
+    for key in ("max_output_tokens", "max_new_tokens", "max_tokens"):
+        raw = cfg.get(key)
+        if raw in {None, ""}:
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            configured.append(value)
+    effective = min([int(limit), *configured]) if configured else int(limit)
+
+    adapter = resolve_llm_adapter(cfg, strict=False)
+    if adapter == OPENAI_RESPONSES_ADAPTER:
+        out["max_output_tokens"] = effective
+    elif adapter == HUGGINGFACE_ADAPTER:
+        out["max_new_tokens"] = effective
+    else:
+        out["max_tokens"] = effective
+    return out
 
 def expand_command_part(part: str, values: dict[str, str]) -> str:
     out = part

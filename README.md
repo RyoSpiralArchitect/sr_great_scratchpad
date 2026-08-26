@@ -260,6 +260,22 @@ python3 -S sr_great_scratchpad.py experiment run scenarios/topic_drift.md \
   --out-dir runs/topic-drift
 ```
 
+Luna の raw API と scratchpad runtime を同じ議題・発話数・生成予算で比較する:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_centerline_dialogue.json \
+  --profile openai-5.6-luna \
+  --turns 8 \
+  --turn-output-tokens 720 \
+  --max-api-calls 80 \
+  --max-suite-output-tokens 24000
+```
+
+既定では `raw/raw`、`raw/scratchpad`、`scratchpad/raw`、`scratchpad/scratchpad` を走らせます。混合条件を左右反転するため、先攻・後攻の影響を scratchpad の効果と取り違えにくくなります。各発話の生成token枠は、scratchpad 内部の action/final 呼び出し全体で共有されます。入力tokenは memory/runtime のコストそのものなので揃えず、条件別に report へ記録します。
+
+各 scratchpad 話者は run 内の隔離領域を使い、書いた note を次の自分の発話から参照できます。`report.md`、sessionごとの `transcript.md` / `transcript.jsonl`、provider-visible promptを含む `trace.jsonl`、manifest、scratchpad note が同じ出力ディレクトリに保存されます。report は memory context 注入回数、複数JSONからの protocol recovery、parse error も分けて表示します。`add_note` と完全な final が同時に返った場合だけ、書き込み成功後に final を安全に再利用します。検索系actionの先書き final は採用しません。実行前には最悪 API call 数と suite 全体の生成token上限を検査します。
+
 ### Live run
 
 挙動を見ながら育てるための小さな実行例を用意しています。
@@ -522,6 +538,20 @@ python3 -S sr_great_scratchpad.py experiment run scenarios/topic_drift.md \
   --queue-writes \
   --out-dir runs/topic-drift
 ```
+
+Compare raw Luna with the scratchpad runtime under a shared topic, utterance count, and generation allowance:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_centerline_dialogue.json \
+  --profile openai-5.6-luna \
+  --turns 8 \
+  --turn-output-tokens 720 \
+  --max-api-calls 80 \
+  --max-suite-output-tokens 24000
+```
+
+The default matrix runs `raw/raw`, both orientations of `raw/scratchpad`, and `scratchpad/scratchpad`. Every utterance receives the same generated-token allowance; scratchpad action and final calls share that allowance. Input tokens are reported rather than equalized because runtime and memory overhead are part of the treatment cost. Scratchpad speakers use isolated per-run workspaces whose notes become available on their later turns. The runner freezes transcripts, provider-visible prompts, traces, manifests, usage, tool activity, memory-context injections, multi-object protocol recoveries, parse errors, and deterministic literal-anchor coverage, while leaving the quality judgment to transcript review. A complete trailing final is reused only after a successful `add_note`; search-like actions always wait for their observation.
 
 ### Live Run
 

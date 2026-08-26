@@ -10,6 +10,7 @@ from pathlib import Path
 from .audit import audit_turn_md
 from .chat import append_trace_events, run_chat_turn
 from .constants import ACTION_POLICIES, ROOT_DEFAULT
+from .dialogue import resolve_dialogue_conditions, run_dialogue_matrix
 from .experiments import add_run_id, default_manifest_path, make_run_id, run_scenario_profiles, trace_summary, write_manifest
 from .llm import call_llm_result, draft_annotation, extract_json_object, llm_config_metadata, print_annotation
 from .memory import add_turn, apply_review_item, apply_safe_review_items, audit_review_item, build_context_pack, compact_one_range, edit_review_item, iter_review_items, load_review_item, recent_turn_files, reject_review_item, render_audit, render_recent_turns, render_review_item, retrieve, review_item_is_safe
@@ -777,6 +778,45 @@ def cmd_experiment(args: argparse.Namespace) -> None:
             )
         return
 
+    if args.experiment_cmd == "dialogue":
+        conditions = resolve_dialogue_conditions(args.conditions, args.mirror_mixed)
+        out_dir = (
+            Path(args.out_dir).expanduser()
+            if args.out_dir
+            else root / "runs" / make_run_id("dialogue-matrix")
+        )
+        result = run_dialogue_matrix(
+            root=root,
+            scenario_path=Path(args.scenario).expanduser(),
+            profile=args.profile,
+            llm_config=args.llm_config,
+            out_dir=out_dir,
+            conditions=conditions,
+            turns=args.turns,
+            replicates=args.replicates,
+            turn_output_tokens=args.turn_output_tokens,
+            max_steps=args.max_steps,
+            recent_n=args.recent,
+            max_tool_chars=args.max_tool_chars,
+            json_repair_steps=args.json_repair_steps,
+            policy=args.policy,
+            max_api_calls=args.max_api_calls,
+            max_suite_output_tokens=args.max_suite_output_tokens,
+            quiet=args.quiet,
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"Wrote dialogue matrix report: {result['report_path']}")
+            for session in result["sessions"]:
+                print(
+                    f"{session['session_id']}\tstatus={session['status']}\t"
+                    f"calls={session['model_calls']}\ttrace={session['trace_path']}"
+                )
+        if result["status"] != "ok":
+            raise SystemExit(1)
+        return
+
 def _input_line(prompt: str) -> str:
     try:
         return input(prompt)
@@ -1320,6 +1360,50 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.add_argument("--max-tool-chars", type=int, default=6000, help="Maximum chars returned from each scratchpad action.")
     sp2.add_argument("--json-repair-steps", type=int, default=1, help="Retry invalid JSON runtime outputs up to N times.")
     sp2.add_argument("--quiet", action="store_true", help="Do not print tool action progress.")
+    sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")
+    sp2.set_defaults(func=cmd_experiment)
+
+    sp2 = experiment_sub.add_parser(
+        "dialogue",
+        help="Run a controlled raw/scratchpad model-to-model dialogue matrix.",
+    )
+    sp2.add_argument("scenario", help="JSON dialogue scenario path.")
+    sp2.add_argument("--profile", required=True, help="One LLM profile used by every speaker.")
+    sp2.add_argument("--llm-config", default=None, help="Path to llm.json. Default: ROOT/llm.json")
+    sp2.add_argument(
+        "--conditions",
+        default=",".join(("raw-raw", "raw-scratchpad", "scratchpad-scratchpad")),
+        help="Comma-separated conditions. Mixed conditions are mirrored by default.",
+    )
+    sp2.add_argument(
+        "--no-mirror-mixed",
+        dest="mirror_mixed",
+        action="store_false",
+        default=True,
+        help="Do not add the reversed scratchpad/raw mixed condition.",
+    )
+    sp2.add_argument("--turns", type=int, default=None, help="Utterances per session. Default: scenario value.")
+    sp2.add_argument("--replicates", type=int, default=1)
+    sp2.add_argument(
+        "--turn-output-tokens",
+        type=int,
+        default=720,
+        help="Shared generated-token allowance per utterance, pooled across internal calls.",
+    )
+    sp2.add_argument("--out-dir", default=None, help="Fresh directory for frozen dialogue artifacts.")
+    sp2.add_argument("--policy", choices=sorted(ACTION_POLICIES), default="writer")
+    sp2.add_argument("--max-steps", type=int, default=1, help="Scratchpad tool steps per utterance.")
+    sp2.add_argument("--recent", type=int, default=4, help="Recent scratchpad notes injected per utterance.")
+    sp2.add_argument("--max-tool-chars", type=int, default=6000)
+    sp2.add_argument("--json-repair-steps", type=int, default=1)
+    sp2.add_argument("--max-api-calls", type=int, default=80, help="Hard preflight cap on worst-case calls.")
+    sp2.add_argument(
+        "--max-suite-output-tokens",
+        type=int,
+        default=24000,
+        help="Hard preflight cap on planned generated tokens.",
+    )
+    sp2.add_argument("--quiet", action="store_true")
     sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")
     sp2.set_defaults(func=cmd_experiment)
 

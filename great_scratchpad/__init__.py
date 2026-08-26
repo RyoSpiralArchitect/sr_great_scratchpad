@@ -5,6 +5,7 @@ from .centerline import *
 from .chat import *
 from .cli import *
 from .constants import *
+from .dialogue import *
 from .experiments import *
 from .llm import *
 from .memory import *
