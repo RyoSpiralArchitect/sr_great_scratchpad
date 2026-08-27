@@ -15,6 +15,9 @@ SEMANTIC_NGRAMS = (2, 3, 4)
 SEMANTIC_SCORE_WEIGHTS = {"prototype_cosine": 0.85, "lexical_coverage": 0.15}
 SEMANTIC_MIN_SCORE = 0.055
 SEMANTIC_RELATIVE_LABEL_THRESHOLD = 0.68
+SEMANTIC_BOOTSTRAP_SEED = 20260826
+SEMANTIC_BOOTSTRAP_RESAMPLES = 10000
+SEMANTIC_BOOTSTRAP_CONFIDENCE = 0.95
 NOTE_FIELDS = (
     "text",
     "center",
@@ -99,6 +102,69 @@ def sample_standard_deviation(values: list[float]) -> float:
         return 0.0
     center = mean(values)
     return math.sqrt(sum((value - center) ** 2 for value in values) / (len(values) - 1))
+
+
+def percentile(values: list[float], quantile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * min(1.0, max(0.0, quantile))
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def paired_bootstrap_mean_interval(
+    values: list[float],
+    seed: int = SEMANTIC_BOOTSTRAP_SEED,
+    resamples: int = SEMANTIC_BOOTSTRAP_RESAMPLES,
+    confidence: float = SEMANTIC_BOOTSTRAP_CONFIDENCE,
+) -> dict:
+    if not values or resamples < 1:
+        return {
+            "seed": seed,
+            "resamples": max(0, resamples),
+            "confidence": confidence,
+            "lower": 0.0,
+            "upper": 0.0,
+        }
+    sample_count = len(values)
+    means: list[float] = []
+    for sample_index in range(resamples):
+        sample: list[float] = []
+        for draw_index in range(sample_count):
+            digest = hashlib.sha256(
+                f"{seed}:{sample_index}:{draw_index}".encode("ascii")
+            ).digest()
+            source_index = int.from_bytes(digest[:8], "big") % sample_count
+            sample.append(values[source_index])
+        means.append(mean(sample))
+    tail = (1.0 - confidence) / 2.0
+    return {
+        "seed": seed,
+        "resamples": resamples,
+        "confidence": confidence,
+        "lower": round(percentile(means, tail), 6),
+        "upper": round(percentile(means, 1.0 - tail), 6),
+    }
+
+
+def paired_binary_outcome_table(pairs: list[tuple[bool, bool]]) -> dict:
+    both_pass = sum(1 for treatment, control in pairs if treatment and control)
+    treatment_only = sum(1 for treatment, control in pairs if treatment and not control)
+    control_only = sum(1 for treatment, control in pairs if control and not treatment)
+    neither_pass = sum(1 for treatment, control in pairs if not treatment and not control)
+    return {
+        "pairs": len(pairs),
+        "both_pass": both_pass,
+        "treatment_only": treatment_only,
+        "control_only": control_only,
+        "neither_pass": neither_pass,
+        "discordant_pairs": treatment_only + control_only,
+    }
 
 
 def mean_pairwise_similarity(vectors: list[dict[str, float]]) -> float:
@@ -408,10 +474,25 @@ def _same_speaker_similarity(documents: list[dict], vector_by_id: dict[str, dict
     return mean(values)
 
 
-def _probe_score(manifest: dict, turn: int) -> tuple[int, int]:
+def _probe_results(manifest: dict, turn: int) -> list[dict]:
     evidence = manifest.get("literal_probe_evidence", {})
     results = [item for item in evidence.get("results", []) if int(item.get("turn", 0)) == turn]
-    return sum(1 for item in results if item.get("passed")), len(results)
+    return [
+        {
+            "id": str(item.get("id", f"probe-{index:02d}")),
+            "passed": bool(item.get("passed")),
+            "match": str(item.get("match", "all")),
+            "terms": [str(value) for value in item.get("terms", [])],
+            "found": [str(value) for value in item.get("found", [])],
+            "missing": [str(value) for value in item.get("missing", [])],
+        }
+        for index, item in enumerate(results, start=1)
+    ]
+
+
+def _probe_score(manifest: dict, turn: int) -> tuple[int, int, list[dict]]:
+    results = _probe_results(manifest, turn)
+    return sum(1 for item in results if item.get("passed")), len(results), results
 
 
 def analyze_dialogue_semantics(
@@ -488,7 +569,9 @@ def analyze_dialogue_semantics(
             containment = (
                 ngram_containment(source_note["text"], prompt) if source_note is not None else 0.0
             )
-            probe_passed, probe_total = _probe_score(context["manifest"], target["turn"])
+            probe_passed, probe_total, probe_results = _probe_score(
+                context["manifest"], target["turn"]
+            )
             target_results.append(
                 {
                     "target_id": target["id"],
@@ -502,6 +585,7 @@ def analyze_dialogue_semantics(
                     "frame_score": target_document["frame_scores"][target["frame_id"]],
                     "literal_probe_passed": probe_passed,
                     "literal_probe_total": probe_total,
+                    "literal_probe_results": probe_results,
                     "source_note_id": source_note["id"] if source_note else None,
                     "source_note_turn": source_note["turn"] if source_note else None,
                     "source_note_frame_score": (
@@ -602,6 +686,8 @@ def analyze_dialogue_semantics(
                     "treatment_literal_probe_total": treatment["literal_probe_total"],
                     "control_literal_probe_passed": control["literal_probe_passed"],
                     "control_literal_probe_total": control["literal_probe_total"],
+                    "treatment_literal_probe_results": treatment["literal_probe_results"],
+                    "control_literal_probe_results": control["literal_probe_results"],
                 }
             )
 
@@ -611,6 +697,33 @@ def analyze_dialogue_semantics(
         if not instances:
             continue
         deltas = [item["frame_score_delta"] for item in instances]
+        session_literal_pairs = [
+            (
+                item["treatment_literal_probe_total"] > 0
+                and item["treatment_literal_probe_passed"]
+                == item["treatment_literal_probe_total"],
+                item["control_literal_probe_total"] > 0
+                and item["control_literal_probe_passed"]
+                == item["control_literal_probe_total"],
+            )
+            for item in instances
+            if item["treatment_literal_probe_total"] > 0
+            and item["control_literal_probe_total"] > 0
+        ]
+        item_literal_pairs: list[tuple[bool, bool]] = []
+        for item in instances:
+            treatment_items = {
+                probe["id"]: bool(probe["passed"])
+                for probe in item["treatment_literal_probe_results"]
+            }
+            control_items = {
+                probe["id"]: bool(probe["passed"])
+                for probe in item["control_literal_probe_results"]
+            }
+            item_literal_pairs.extend(
+                (treatment_items[probe_id], control_items[probe_id])
+                for probe_id in sorted(treatment_items.keys() & control_items.keys())
+            )
         contrasts.append(
             {
                 **contrast,
@@ -621,6 +734,7 @@ def analyze_dialogue_semantics(
                 "frame_score_delta": round(mean(deltas), 6),
                 "frame_score_delta_median": round(median(deltas), 6),
                 "frame_score_delta_sample_sd": round(sample_standard_deviation(deltas), 6),
+                "frame_score_delta_bootstrap_ci": paired_bootstrap_mean_interval(deltas),
                 "positive_delta_replicates": sum(1 for value in deltas if value > 0),
                 "frame_score_deltas": deltas,
                 "treatment_note_visible_rate": round(mean([float(item["treatment_note_visible"]) for item in instances]), 6),
@@ -633,6 +747,10 @@ def analyze_dialogue_semantics(
                     f"{sum(item['control_literal_probe_passed'] for item in instances)}/"
                     f"{sum(item['control_literal_probe_total'] for item in instances)}"
                 ),
+                "literal_session_outcomes": paired_binary_outcome_table(
+                    session_literal_pairs
+                ),
+                "literal_item_outcomes": paired_binary_outcome_table(item_literal_pairs),
             }
         )
 
@@ -665,6 +783,7 @@ def analyze_dialogue_semantics(
         "generation_identity": {
             "run_id": suite.get("run_id"),
             "scenario_sha256": suite.get("scenario_sha256"),
+            "dialogue_runner_sha256": suite.get("dialogue_runner_sha256"),
             "llm": suite.get("llm", {}),
             "history_chars": suite.get("history_chars"),
             "budget_plan": suite.get("budget_plan", {}),
@@ -675,6 +794,11 @@ def analyze_dialogue_semantics(
             "score_weights": SEMANTIC_SCORE_WEIGHTS,
             "min_score": SEMANTIC_MIN_SCORE,
             "relative_label_threshold": SEMANTIC_RELATIVE_LABEL_THRESHOLD,
+            "paired_bootstrap": {
+                "seed": SEMANTIC_BOOTSTRAP_SEED,
+                "resamples": SEMANTIC_BOOTSTRAP_RESAMPLES,
+                "confidence": SEMANTIC_BOOTSTRAP_CONFIDENCE,
+            },
             "taxonomy_path": taxonomy["_path"],
             "taxonomy_sha256": taxonomy["_sha256"],
             "analyzer_sha256": file_sha256(Path(__file__)),
@@ -800,17 +924,20 @@ def semantic_report_markdown(result: dict) -> str:
         lines.extend(["", "## Frozen Contrasts", ""])
         lines.extend(
             [
-                "| Contrast | n | Treatment | Control | Mean delta | Median | Positive | Note visibility rate | Literal probes |",
-                "|---|---:|---|---|---:|---:|---:|---|---|",
+                "| Contrast | n | Treatment | Control | Mean delta | Bootstrap CI | Median | Positive | Note visibility rate | Literal probes | Literal discordance |",
+                "|---|---:|---|---|---:|---|---:|---:|---|---|---|",
             ]
         )
         for contrast in result["contrasts"]:
             lines.append(
                 f"| {contrast['id']} | {contrast['replicates']} | {contrast['treatment']} | {contrast['control']} | "
-                f"{_score(contrast['frame_score_delta'])} | {_score(contrast['frame_score_delta_median'])} | "
+                f"{_score(contrast['frame_score_delta'])} | "
+                f"[{_score(contrast['frame_score_delta_bootstrap_ci']['lower'])}, {_score(contrast['frame_score_delta_bootstrap_ci']['upper'])}] | "
+                f"{_score(contrast['frame_score_delta_median'])} | "
                 f"{contrast['positive_delta_replicates']}/{contrast['replicates']} | "
                 f"{_score(contrast['treatment_note_visible_rate'])} / {_score(contrast['control_note_visible_rate'])} | "
-                f"{contrast['treatment_literal_probe']} / {contrast['control_literal_probe']} |"
+                f"{contrast['treatment_literal_probe']} / {contrast['control_literal_probe']} | "
+                f"{contrast['literal_session_outcomes']['treatment_only']} / {contrast['literal_session_outcomes']['control_only']} |"
             )
 
     lines.extend(["", "## Representative Passages", ""])

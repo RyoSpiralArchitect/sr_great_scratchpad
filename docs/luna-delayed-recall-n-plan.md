@@ -110,11 +110,19 @@ Campaign total if both stages run:
 - calibration projection: about 660 calls, 842,892 prompt tokens, and 86,772 output tokens
 
 Use the same deterministic four-way condition-order rotation for both cycles of
-the n=8 cohort. Before reading the n=8 result, add the fixed-seed paired bootstrap and
-exact discordant-pair report to the analyzer. Report all paired deltas, mean,
-median, sample standard deviation, and positive-direction count. Keep
+the n=8 cohort. The analyzer reports a fixed-seed paired bootstrap interval and
+exact discordant-pair tables. Report all paired deltas, mean, median, sample
+standard deviation, and positive-direction count. Keep
 protocol/mechanical failures separate from semantic failures.
 
 ## Stop boundary
 
 The n=8 result can support a bounded claim about this model, scenario, history window, and taxonomy. It cannot establish general conversational memory quality across topics or models. A broader claim requires at least one new topic family and one new model profile with independently frozen taxonomies.
+
+## Stage 1 execution record
+
+The valid n=4 pilot completed on 2026-08-26. All four paired semantic deltas
+were positive, so the frozen Stage 2 rule advances to an independent n=8
+confirmation. Two earlier failed cohorts remain preserved as protocol evidence
+and are not included in the behavioral estimate. See
+[`docs/luna-delayed-recall-n4.md`](luna-delayed-recall-n4.md).

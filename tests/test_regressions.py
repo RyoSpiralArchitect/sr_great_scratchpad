@@ -1617,6 +1617,18 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
                 targets["write-no-recall"]["frame_score"],
             )
             self.assertGreater(semantic["contrasts"][0]["frame_score_delta"], 0)
+            self.assertEqual(
+                semantic["contrasts"][0]["frame_score_delta_bootstrap_ci"]["lower"],
+                semantic["contrasts"][0]["frame_score_delta"],
+            )
+            self.assertEqual(
+                semantic["contrasts"][0]["literal_session_outcomes"]["treatment_only"],
+                1,
+            )
+            self.assertEqual(
+                semantic["contrasts"][0]["literal_item_outcomes"]["treatment_only"],
+                2,
+            )
             first_json = semantic_prefix.with_suffix(".json").read_bytes()
             gs.analyze_dialogue_semantics(
                 run_dir=out_dir,

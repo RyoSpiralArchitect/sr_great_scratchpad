@@ -303,7 +303,7 @@ python3 -S sr_great_scratchpad.py experiment dialogue-nlp \
   --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json
 ```
 
-生成scenarioと評価taxonomyは別identityとしてSHA-256を記録します。reportは意味フレーム占有率、note内容、反復類似度、noteのprovider-visible promptへの包含、note→遅延応答類似度、paired treatment差を分けて出力します。これは監査可能な語彙・意味測定であり、LLM judgeや真偽判定ではありません。反復拡張の事前計画は [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md) にあります。
+生成scenarioと評価taxonomyは別identityとしてSHA-256を記録します。reportは意味フレーム占有率、note内容、反復類似度、noteのprovider-visible promptへの包含、note→遅延応答類似度、paired treatment差、固定seed bootstrap区間、literalの対応表を分けて出力します。これは監査可能な語彙・意味測定であり、LLM judgeや真偽判定ではありません。反復拡張の事前計画は [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md)、n=4実行結果は [`docs/luna-delayed-recall-n4.md`](docs/luna-delayed-recall-n4.md) にあります。
 
 ### Live run
 
@@ -609,7 +609,7 @@ python3 -S sr_great_scratchpad.py experiment dialogue-nlp \
   --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json
 ```
 
-Generation scenarios and assessment taxonomies retain separate SHA-256 identities. The report separates semantic-frame occupancy, note contents, repetition similarity, provider-visible note containment, note-to-delayed-response similarity, and paired treatment contrasts. This is an auditable lexical-semantic measure, not an LLM judge or factuality scorer. See [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md) for the preregistered replication path.
+Generation scenarios and assessment taxonomies retain separate SHA-256 identities. The report separates semantic-frame occupancy, note contents, repetition similarity, provider-visible note containment, note-to-delayed-response similarity, paired treatment contrasts, a fixed-seed bootstrap interval, and paired literal outcomes. This is an auditable lexical-semantic measure, not an LLM judge or factuality scorer. See [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md) for the preregistered replication path and [`docs/luna-delayed-recall-n4.md`](docs/luna-delayed-recall-n4.md) for the Stage 1 result.
 
 ### Live Run
 

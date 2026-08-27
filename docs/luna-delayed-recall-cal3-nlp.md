@@ -5,11 +5,11 @@
 - run id: `dialogue-2026-08-26T085141-0700-0a39007a`
 - scenario SHA-256: `df65f5481971f5a2d7f22001d4ac6dde7abb523b536c749eb440fad18b44f5ee`
 - taxonomy SHA-256: `bd995316c76764f436024fe57cc66a1bdd3dc3831cbc10a952de36442b22b964`
-- analyzer SHA-256: `5068dc7c811133f254b5a2d8b02fe847403a98cd5a261df12667e4079e6c287f`
-- semantic JSON SHA-256: `67ab5e9657d44caee2492c1fbee26e76d7980b0593a173dd3ca7296645947e0c`
+- analyzer SHA-256: `2b664b66a2580b28b13c570cf579eb07ec4213555d1bf334a7e92890afe5fd11`
+- semantic JSON SHA-256: `bc5970f0494eea23fc1499f5bb9b84ecd2c48866558fd4a792433ef5a363e2ce`
 - corpus: 48 utterances and 7 successful notes
 
-The analyzer was replayed twice with byte-identical JSON and Markdown outputs.
+The analyzer was replayed twice with byte-identical JSON and Markdown outputs. The updated assessment adds a fixed-seed paired bootstrap and paired literal-outcome tables without regenerating the dialogue.
 
 ## Delayed correction
 
