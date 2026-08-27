@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "luna-delayed-recall-semantic-v1",
   "title": "クラゲ・味噌・名古屋論の意味フレーム",
   "frames": [
@@ -96,10 +96,49 @@
       ]
     }
   ],
+  "relation_probes": [
+    {
+      "id": "delayed-level-transition",
+      "turn": 11,
+      "before_markers": [
+        "変更前",
+        "補正前"
+      ],
+      "before_terms": [
+        "種間",
+        "種ごと",
+        "種レベル",
+        "種・生物全体"
+      ],
+      "after_markers": [
+        "変更後",
+        "補正後"
+      ],
+      "after_terms": [
+        "個体内",
+        "一個体",
+        "単一個体"
+      ],
+      "boundary_terms": [
+        "限界",
+        "尺度",
+        "同一視",
+        "因果",
+        "形成原因",
+        "限られ",
+        "対応しません",
+        "比較できません",
+        "一致しません"
+      ],
+      "boundary_match": "any",
+      "max_marker_gap": 56
+    }
+  ],
   "targets": [
     {
       "id": "delayed-correction-turn-11",
       "turn": 11,
+      "source_turn": 3,
       "frame_id": "biological-level-correction"
     }
   ],
@@ -109,6 +148,36 @@
       "target_id": "delayed-correction-turn-11",
       "treatment": "scratchpad-scratchpad",
       "control": "write-no-recall"
+    },
+    {
+      "id": "selective-recall-uplift",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "probe-top1",
+      "control": "write-no-recall"
+    },
+    {
+      "id": "full-vs-selective-recall",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "scratchpad-scratchpad",
+      "control": "probe-top1"
+    },
+    {
+      "id": "selective-top2-uplift",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "probe-top2",
+      "control": "write-no-recall"
+    },
+    {
+      "id": "top2-vs-top1",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "probe-top2",
+      "control": "probe-top1"
+    },
+    {
+      "id": "full-vs-selective-top2",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "scratchpad-scratchpad",
+      "control": "probe-top2"
     }
   ]
 }

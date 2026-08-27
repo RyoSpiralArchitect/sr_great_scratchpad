@@ -60,7 +60,10 @@ def main() -> None:
 
     if delayed_probe:
         if CORRECTION_NOTE in prompt:
-            final("MEMORY_RECALLED: 個体内の異質性と種間差を取り違えず、味噌との尺度差を保つ。")
+            final(
+                "MEMORY_RECALLED: 変更前は種間差、変更後は個体内の異質性。"
+                "味噌とのアナロジーには尺度を同一視できない限界がある。"
+            )
         else:
             final("RUNTIME_NO_RECALL: 通常履歴だけでは序盤の補正内容を特定できない。")
         return

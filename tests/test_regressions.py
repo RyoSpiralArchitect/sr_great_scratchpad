@@ -92,6 +92,89 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             ]
             self.assertEqual(keys[:2], ["Semantic Compression", "Topic Drift"])
 
+    def test_selective_retrieval_compacts_and_reports_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tdir = gs.ensure_thread_dirs(root, "t")
+            source_text = "個体内の異質性を種間差と取り違えない。"
+            gs.add_turn(
+                root=root,
+                thread_id="t",
+                speaker="note",
+                raw=source_text,
+                center="比較単位",
+                trajectory="種間差から個体内差へ補正",
+                anchors="個体内, 種間",
+            )
+            gs.add_turn(
+                root=root,
+                thread_id="t",
+                speaker="note",
+                raw="あんかけパスタの成立地を検討する。",
+                center="料理様式",
+            )
+
+            context, sources = gs.render_retrieved_turns(
+                tdir,
+                query="変更された生物学上の比較単位を復元する",
+                top=1,
+                max_chars_per_doc=220,
+            )
+
+            self.assertEqual(len(sources), 1)
+            self.assertEqual(sources[0]["path"], "turns/000001-note.md")
+            self.assertIn(source_text, context)
+            self.assertIn("Trajectory:", context)
+            self.assertNotIn("Date:", context)
+            self.assertLessEqual(sources[0]["injected_chars"], 220)
+
+    def test_relation_probe_rejects_reversed_level_assignment(self) -> None:
+        probe = {
+            "id": "level-transition",
+            "turn": 11,
+            "before_markers": ["変更前"],
+            "before_terms": ["種間"],
+            "after_markers": ["変更後"],
+            "after_terms": ["個体内"],
+            "boundary_terms": ["尺度"],
+            "boundary_match": "any",
+            "max_marker_gap": 40,
+        }
+        correct = gs.relation_probe_evidence(
+            [
+                {
+                    "kind": "utterance",
+                    "turn": 11,
+                    "speaker": "A",
+                    "message": "変更前は種間差、変更後は個体内差。尺度の限界を保つ。",
+                }
+            ],
+            [probe],
+        )
+        reversed_result = gs.relation_probe_evidence(
+            [
+                {
+                    "kind": "utterance",
+                    "turn": 11,
+                    "speaker": "A",
+                    "message": "変更前は個体内差、変更後は種間差。尺度の限界を保つ。",
+                }
+            ],
+            [probe],
+        )
+
+        self.assertEqual(correct["passed"], 1)
+        self.assertEqual(reversed_result["passed"], 0)
+        self.assertTrue(reversed_result["results"][0]["reversed_roles"])
+
+        scenario = gs.load_dialogue_scenario(
+            Path("scenarios/luna_delayed_recall_ablation.json")
+        )
+        taxonomy = gs.load_semantic_taxonomy(
+            Path("scenarios/luna_delayed_recall_semantic_taxonomy.json")
+        )
+        self.assertEqual(scenario["relation_probes"], taxonomy["relation_probes"])
+
     def test_compact_rejects_non_positive_block_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1639,6 +1722,156 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             )
             self.assertEqual(first_json, semantic_prefix.with_suffix(".json").read_bytes())
             self.assertTrue(semantic_prefix.with_suffix(".md").exists())
+
+    def test_dialogue_mechanism_injects_top1_only_at_probe_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "scratchpad"
+            out_dir = Path(tmp) / "mechanism"
+            parser = gs.build_parser()
+            fake_model = Path("scripts/fake_ablation_dialogue_llm.py").resolve()
+            scenario = Path("scenarios/luna_delayed_recall_ablation.json").resolve()
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "llm-config",
+                    "local",
+                    "--profile",
+                    "fake-mechanism",
+                    "--command",
+                    f"{sys.executable} -S {fake_model}",
+                    "--default",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                args.func(args)
+
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "experiment",
+                    "dialogue",
+                    str(scenario),
+                    "--profile",
+                    "fake-mechanism",
+                    "--preset",
+                    "mechanism",
+                    "--turns",
+                    "12",
+                    "--history-chars",
+                    "500",
+                    "--turn-output-tokens",
+                    "200",
+                    "--max-api-calls",
+                    "144",
+                    "--max-suite-output-tokens",
+                    "17000",
+                    "--out-dir",
+                    str(out_dir),
+                    "--quiet",
+                    "--json",
+                ]
+            )
+            out = io.StringIO()
+            with redirect_stdout(out):
+                args.func(args)
+            result = json.loads(out.getvalue())
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(
+                [session["condition"] for session in result["sessions"]],
+                [
+                    "write-no-recall",
+                    "probe-top1",
+                    "probe-top2",
+                    "scratchpad-scratchpad",
+                ],
+            )
+            sessions = {session["condition"]: session for session in result["sessions"]}
+            self.assertEqual(sessions["write-no-recall"]["memory_context_injections"], 0)
+            self.assertEqual(sessions["probe-top1"]["memory_context_injections"], 1)
+            self.assertEqual(sessions["probe-top1"]["retrieval_context_injections"], 1)
+            self.assertEqual(sessions["probe-top1"]["retrieval_context_sources"], 1)
+            self.assertEqual(sessions["probe-top2"]["memory_context_injections"], 1)
+            self.assertEqual(sessions["probe-top2"]["retrieval_context_injections"], 1)
+            self.assertGreater(
+                sessions["scratchpad-scratchpad"]["memory_context_injections"], 1
+            )
+            self.assertEqual(
+                sessions["probe-top1"]["relation_probe_evidence"]["passed"], 1
+            )
+            self.assertEqual(
+                sessions["write-no-recall"]["relation_probe_evidence"]["passed"], 0
+            )
+            self.assertEqual(
+                sessions["probe-top2"]["relation_probe_evidence"]["passed"], 1
+            )
+
+            probe_events = gs.load_trace_events(Path(sessions["probe-top1"]["trace_path"]))
+            starts = [event for event in probe_events if event["event"] == "turn_start"]
+            self.assertTrue(
+                all(
+                    not event["recent_context_present"]
+                    for event in starts
+                    if event["dialogue_turn"] != 11
+                )
+            )
+            probe_start = next(
+                event for event in starts if event["dialogue_turn"] == 11
+            )
+            self.assertEqual(probe_start["memory_context_mode"], "retrieved")
+            self.assertEqual(
+                probe_start["retrieval_sources"][0]["path"],
+                "turns/000001-note.md",
+            )
+            probe_request = next(
+                event
+                for event in probe_events
+                if event["event"] == "model_request" and event["dialogue_turn"] == 11
+            )
+            self.assertIn("個体内の異質性を種間差と取り違えない", probe_request["prompt"])
+
+            top2_events = gs.load_trace_events(Path(sessions["probe-top2"]["trace_path"]))
+            top2_start = next(
+                event
+                for event in top2_events
+                if event["event"] == "turn_start" and event["dialogue_turn"] == 11
+            )
+            self.assertEqual(top2_start["retrieval_top"], 2)
+            self.assertEqual(top2_start["memory_context_mode"], "retrieved")
+
+            taxonomy = Path("scenarios/luna_delayed_recall_semantic_taxonomy.json")
+            semantic = gs.analyze_dialogue_semantics(
+                run_dir=out_dir,
+                taxonomy_path=taxonomy,
+                out_prefix=Path(tmp) / "semantic" / "mechanism",
+            )
+            selective = next(
+                item
+                for item in semantic["contrasts"]
+                if item["id"] == "selective-recall-uplift"
+            )
+            self.assertGreater(selective["frame_score_delta"], 0)
+            self.assertEqual(
+                selective["relation_session_outcomes"]["treatment_only"], 1
+            )
+
+            benchmark = gs.benchmark_dialogue_retrieval(
+                run_dir=out_dir,
+                taxonomy_path=taxonomy,
+                out_prefix=Path(tmp) / "retrieval" / "mechanism",
+            )
+            self.assertEqual(benchmark["eligible_targets"], 4)
+            thread_summary = next(
+                item
+                for item in benchmark["summaries"]
+                if item["query_source"] == "intervention"
+                and item["scope"] == "thread"
+            )
+            self.assertEqual(thread_summary["recall_at"]["1"], 1.0)
+            self.assertEqual(thread_summary["recall_at"]["2"], 1.0)
+            self.assertEqual(thread_summary["mrr"], 1.0)
 
     def test_dialogue_counterbalances_starter_and_condition_order(self) -> None:
         plan = gs.dialogue_budget_plan(

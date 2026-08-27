@@ -560,6 +560,60 @@ def render_recent_turns(tdir: Path, n: int = 5, max_chars: int = 1600) -> str:
         )
     return "\n".join(out).strip()
 
+def compact_memory_text(text: str, max_chars: int = 700) -> str:
+    fields = (
+        ("Raw articulation", 420),
+        ("Center pin", 100),
+        ("Trajectory", 120),
+        ("Anchors", 80),
+        ("Open questions", 100),
+        ("Drift risks", 100),
+    )
+    lines: list[str] = []
+    for name, field_limit in fields:
+        value = parse_section(text, name).strip()
+        if not value or value in {"(none)", "(not specified)"}:
+            continue
+        label = "Note" if name == "Raw articulation" else name
+        lines.append(f"{label}: {limit_text(value, field_limit)}")
+    compact = "\n".join(lines).strip()
+    return limit_text(compact or text, max_chars)
+
+def render_retrieved_turns(
+    tdir: Path,
+    query: str,
+    top: int = 1,
+    max_chars_per_doc: int = 700,
+) -> tuple[str, list[dict]]:
+    if top < 1 or not query.strip():
+        return "(no retrieved turns)", []
+
+    hits = retrieve(tdir, query, top)
+    if not hits:
+        return "(no retrieved turns)", []
+
+    out = ["Retrieved scratchpad notes for the current message:", ""]
+    sources: list[dict] = []
+    for score, path, text in hits:
+        compact = compact_memory_text(text, max_chars=max_chars_per_doc)
+        relative_path = str(path.relative_to(tdir))
+        out.extend(
+            [
+                f"--- score={score:.1f} path={relative_path} ---",
+                compact,
+                "",
+            ]
+        )
+        sources.append(
+            {
+                "path": relative_path,
+                "score": round(score, 3),
+                "source_chars": len(text),
+                "injected_chars": len(compact),
+            }
+        )
+    return "\n".join(out).strip(), sources
+
 def render_audit(tdir: Path, as_json: bool = True, max_flags: int = 8) -> str:
     files = sorted((tdir / "turns").glob("*.md"))
     if not files:

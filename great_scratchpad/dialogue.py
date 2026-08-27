@@ -20,6 +20,8 @@ DIALOGUE_CONDITIONS = {
     "scratchpad-scratchpad": ("scratchpad", "scratchpad"),
     "centerline-only": ("centerline-only", "centerline-only"),
     "write-no-recall": ("write-no-recall", "write-no-recall"),
+    "probe-top1": ("probe-top1", "probe-top1"),
+    "probe-top2": ("probe-top2", "probe-top2"),
 }
 DEFAULT_DIALOGUE_CONDITIONS = (
     "raw-raw",
@@ -32,8 +34,17 @@ ABLATION_DIALOGUE_CONDITIONS = (
     "write-no-recall",
     "scratchpad-scratchpad",
 )
+MECHANISM_DIALOGUE_CONDITIONS = (
+    "write-no-recall",
+    "probe-top1",
+    "probe-top2",
+    "scratchpad-scratchpad",
+)
 PLAIN_DIALOGUE_MODES = frozenset({"raw", "centerline-only"})
-SCRATCHPAD_DIALOGUE_MODES = frozenset({"scratchpad", "write-no-recall"})
+SCRATCHPAD_DIALOGUE_MODES = frozenset(
+    {"scratchpad", "write-no-recall", "probe-top1", "probe-top2"}
+)
+RELATION_PROBE_METHOD = "marker-role-order-v1"
 
 
 def load_dialogue_scenario(path: Path) -> dict:
@@ -106,6 +117,118 @@ def load_dialogue_scenario(path: Path) -> dict:
             {"id": probe_id, "turn": probe_turn, "match": match, "terms": terms}
         )
     scenario["literal_probes"] = literal_probes
+
+    relation_probes: list[dict] = []
+    for item in scenario.get("relation_probes", []):
+        if not isinstance(item, dict):
+            raise SystemExit("Each dialogue relation probe must be a JSON object.")
+        probe_id = str(item.get("id", "")).strip()
+        try:
+            probe_turn = int(item.get("turn"))
+            max_marker_gap = int(item.get("max_marker_gap", 80))
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                "Dialogue relation probe turn and max_marker_gap must be integers."
+            ) from exc
+        before_markers = [
+            str(value).strip()
+            for value in item.get("before_markers", ["変更前"])
+            if str(value).strip()
+        ]
+        before_terms = [
+            str(value).strip() for value in item.get("before_terms", []) if str(value).strip()
+        ]
+        after_markers = [
+            str(value).strip()
+            for value in item.get("after_markers", ["変更後"])
+            if str(value).strip()
+        ]
+        after_terms = [
+            str(value).strip() for value in item.get("after_terms", []) if str(value).strip()
+        ]
+        boundary_terms = [
+            str(value).strip()
+            for value in item.get("boundary_terms", [])
+            if str(value).strip()
+        ]
+        boundary_match = str(item.get("boundary_match", "any")).strip().lower()
+        if (
+            not probe_id
+            or probe_turn < 1
+            or max_marker_gap < 1
+            or not before_markers
+            or not before_terms
+            or not after_markers
+            or not after_terms
+            or not boundary_terms
+            or boundary_match not in {"all", "any"}
+        ):
+            raise SystemExit(
+                "Dialogue relation probes require id, turn >= 1, before/after markers "
+                "and terms, boundary_terms, boundary_match=all|any, and max_marker_gap >= 1."
+            )
+        relation_probes.append(
+            {
+                "id": probe_id,
+                "turn": probe_turn,
+                "before_markers": before_markers,
+                "before_terms": before_terms,
+                "after_markers": after_markers,
+                "after_terms": after_terms,
+                "boundary_terms": boundary_terms,
+                "boundary_match": boundary_match,
+                "max_marker_gap": max_marker_gap,
+            }
+        )
+    scenario["relation_probes"] = relation_probes
+
+    selective_raw = scenario.get("selective_recall", {})
+    if selective_raw is None:
+        selective_raw = {}
+    if not isinstance(selective_raw, dict):
+        raise SystemExit("Dialogue selective_recall must be one JSON object.")
+    default_recall_turns = sorted(
+        {
+            int(item["turn"])
+            for item in [*literal_probes, *relation_probes]
+        }
+    )
+    try:
+        selective_turns = sorted(
+            {int(value) for value in selective_raw.get("turns", default_recall_turns)}
+        )
+        selective_max_chars = int(selective_raw.get("max_chars_per_doc", 700))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            "Dialogue selective_recall turns and max_chars_per_doc must be integers."
+        ) from exc
+    selective_query_source = str(
+        selective_raw.get("query_source", "current-message")
+    ).strip().lower()
+    if (
+        any(turn < 1 for turn in selective_turns)
+        or selective_max_chars < 1
+        or selective_query_source not in {"current-message", "intervention"}
+    ):
+        raise SystemExit(
+            "Dialogue selective_recall requires turns >= 1, max_chars_per_doc >= 1, "
+            "and query_source=current-message|intervention."
+        )
+    intervention_turns = {int(item["before_turn"]) for item in interventions}
+    if selective_query_source == "intervention":
+        missing_interventions = [
+            turn for turn in selective_turns if turn not in intervention_turns
+        ]
+        if missing_interventions:
+            raise SystemExit(
+                "Dialogue selective_recall query_source=intervention requires an "
+                f"intervention at every recall turn; missing {missing_interventions}."
+            )
+    scenario["selective_recall"] = {
+        "turns": selective_turns,
+        "max_chars_per_doc": selective_max_chars,
+        "query_source": selective_query_source,
+    }
     scenario["_path"] = str(path)
     return scenario
 
@@ -127,6 +250,10 @@ def normalize_condition_name(name: str) -> str:
         "full": "scratchpad-scratchpad",
         "full-scratchpad": "scratchpad-scratchpad",
         "write-only": "write-no-recall",
+        "probe-only": "probe-top1",
+        "selective": "probe-top1",
+        "selective-recall": "probe-top1",
+        "selective-top2": "probe-top2",
     }
     return aliases.get(normalized, normalized)
 
@@ -136,11 +263,13 @@ def resolve_dialogue_conditions(
     mirror_mixed: bool = True,
     preset: str = "matrix",
 ) -> list[str]:
-    if preset not in {"matrix", "ablation"}:
+    if preset not in {"matrix", "ablation", "mechanism"}:
         raise SystemExit(f"Unknown dialogue preset: {preset!r}")
-    defaults = (
-        ABLATION_DIALOGUE_CONDITIONS if preset == "ablation" else DEFAULT_DIALOGUE_CONDITIONS
-    )
+    defaults = {
+        "matrix": DEFAULT_DIALOGUE_CONDITIONS,
+        "ablation": ABLATION_DIALOGUE_CONDITIONS,
+        "mechanism": MECHANISM_DIALOGUE_CONDITIONS,
+    }[preset]
     requested = (
         [part for part in str(value).split(",") if part.strip()]
         if value
@@ -487,6 +616,9 @@ def summarize_scratchpad_turn(events: list[dict], message: str) -> dict:
     tool_actions: list[str] = []
     memory_writes = 0
     memory_context_injections = 0
+    retrieval_context_injections = 0
+    retrieval_context_sources = 0
+    retrieval_context_chars = 0
     protocol_recoveries = 0
     json_parse_errors = 0
     centerline_flags: list[str] = []
@@ -509,6 +641,10 @@ def summarize_scratchpad_turn(events: list[dict], message: str) -> dict:
                 memory_writes += 1
         if name == "turn_start" and event.get("recent_context_present"):
             memory_context_injections += 1
+            if event.get("memory_context_mode") == "retrieved":
+                retrieval_context_injections += 1
+                retrieval_context_sources += int(event.get("recent_context_sources", 0))
+                retrieval_context_chars += int(event.get("recent_context_chars", 0))
         if name == "json_protocol_recovery":
             protocol_recoveries += 1
         if name == "json_parse_error":
@@ -531,6 +667,9 @@ def summarize_scratchpad_turn(events: list[dict], message: str) -> dict:
         "tool_actions": tool_actions,
         "memory_writes": memory_writes,
         "memory_context_injections": memory_context_injections,
+        "retrieval_context_injections": retrieval_context_injections,
+        "retrieval_context_sources": retrieval_context_sources,
+        "retrieval_context_chars": retrieval_context_chars,
         "protocol_recoveries": protocol_recoveries,
         "json_parse_errors": json_parse_errors,
         "centerline_flags": sorted(set(centerline_flags)),
@@ -613,6 +752,148 @@ def literal_probe_evidence(records: list[dict], probes: list[dict]) -> dict:
     }
 
 
+def _all_positions(text: str, needle: str) -> list[int]:
+    positions: list[int] = []
+    start = 0
+    while needle:
+        position = text.find(needle, start)
+        if position < 0:
+            break
+        positions.append(position)
+        start = position + 1
+    return positions
+
+
+def _role_matches(
+    text: str,
+    markers: list[str],
+    terms: list[str],
+    max_gap: int,
+    stop_markers: list[str],
+) -> list[dict]:
+    matches: list[dict] = []
+    for marker in markers:
+        folded_marker = re.sub(r"\s+", "", marker).casefold()
+        for marker_position in _all_positions(text, folded_marker):
+            marker_end = marker_position + len(folded_marker)
+            next_marker_positions = [
+                position
+                for stop_marker in stop_markers
+                for position in _all_positions(
+                    text,
+                    re.sub(r"\s+", "", stop_marker).casefold(),
+                )
+                if position >= marker_end
+            ]
+            window_end = min(next_marker_positions, default=len(text))
+            for term in terms:
+                folded_term = re.sub(r"\s+", "", term).casefold()
+                for term_position in _all_positions(text, folded_term):
+                    gap = term_position - marker_end
+                    if 0 <= gap <= max_gap and term_position < window_end:
+                        matches.append(
+                            {
+                                "marker": marker,
+                                "term": term,
+                                "marker_position": marker_position,
+                                "term_position": term_position,
+                                "gap": gap,
+                            }
+                        )
+    return sorted(
+        matches,
+        key=lambda item: (
+            int(item["marker_position"]),
+            int(item["term_position"]),
+            str(item["marker"]),
+            str(item["term"]),
+        ),
+    )
+
+
+def relation_probe_evidence(records: list[dict], probes: list[dict]) -> dict:
+    utterances = {
+        int(item["turn"]): item
+        for item in records
+        if item.get("kind") == "utterance" and isinstance(item.get("turn"), int)
+    }
+    results: list[dict] = []
+    for probe in probes:
+        record = utterances.get(int(probe["turn"]))
+        message = str(record.get("message", "")) if record else ""
+        folded = re.sub(r"\s+", "", message).casefold()
+        before_matches = _role_matches(
+            folded,
+            probe["before_markers"],
+            probe["before_terms"],
+            int(probe["max_marker_gap"]),
+            [*probe["before_markers"], *probe["after_markers"]],
+        )
+        after_matches = _role_matches(
+            folded,
+            probe["after_markers"],
+            probe["after_terms"],
+            int(probe["max_marker_gap"]),
+            [*probe["before_markers"], *probe["after_markers"]],
+        )
+        reversed_before = _role_matches(
+            folded,
+            probe["before_markers"],
+            probe["after_terms"],
+            int(probe["max_marker_gap"]),
+            [*probe["before_markers"], *probe["after_markers"]],
+        )
+        reversed_after = _role_matches(
+            folded,
+            probe["after_markers"],
+            probe["before_terms"],
+            int(probe["max_marker_gap"]),
+            [*probe["before_markers"], *probe["after_markers"]],
+        )
+        order_passed = any(
+            int(before["marker_position"]) < int(after["marker_position"])
+            for before in before_matches
+            for after in after_matches
+        )
+        boundary_found = [
+            term
+            for term in probe["boundary_terms"]
+            if re.sub(r"\s+", "", term).casefold() in folded
+        ]
+        boundary_passed = len(boundary_found) == len(probe["boundary_terms"])
+        if probe["boundary_match"] == "any":
+            boundary_passed = bool(boundary_found)
+        reversed_roles = bool(reversed_before or reversed_after)
+        passed = bool(
+            before_matches
+            and after_matches
+            and order_passed
+            and boundary_passed
+            and not reversed_roles
+        )
+        results.append(
+            {
+                **probe,
+                "speaker": record.get("speaker") if record else None,
+                "before_matches": before_matches,
+                "after_matches": after_matches,
+                "order_passed": order_passed,
+                "boundary_found": boundary_found,
+                "boundary_missing": [
+                    term for term in probe["boundary_terms"] if term not in boundary_found
+                ],
+                "boundary_passed": boundary_passed,
+                "reversed_roles": reversed_roles,
+                "passed": passed,
+            }
+        )
+    return {
+        "passed": sum(1 for item in results if item["passed"]),
+        "total": len(results),
+        "results": results,
+    }
+
+
 def transcript_markdown(scenario: dict, session: dict, records: list[dict]) -> str:
     lines = [
         f"# {scenario['title']}",
@@ -673,15 +954,16 @@ def dialogue_report_markdown(result: dict) -> str:
         "",
         "## Conditions",
         "",
-        "| Session | Start | A | B | Status | Calls | Tools | Writes | Memory ctx | Recoveries | Parse errors | Prompt tok | Output tok | Anchors | Probes |",
-        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Session | Start | A | B | Status | Calls | Tools | Writes | Memory ctx | Retrieval ctx | Recoveries | Parse errors | Prompt tok | Output tok | Anchors | Literal | Relation |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for session in result.get("sessions", []):
         usage = session.get("usage", {})
         coverage = session.get("anchor_coverage", {})
         probes = session.get("literal_probe_evidence", {})
+        relations = session.get("relation_probe_evidence", {})
         lines.append(
-            "| {session_id} | {start} | {a} | {b} | {status} | {calls} | {tools} | {writes} | {memory_ctx} | {recoveries} | {parse_errors} | {prompt} | {completion} | {found}/{total} | {probe_passed}/{probe_total} |".format(
+            "| {session_id} | {start} | {a} | {b} | {status} | {calls} | {tools} | {writes} | {memory_ctx} | {retrieval_ctx} | {recoveries} | {parse_errors} | {prompt} | {completion} | {found}/{total} | {probe_passed}/{probe_total} | {relation_passed}/{relation_total} |".format(
                 session_id=session["session_id"],
                 start=session["starting_speaker"],
                 a=session["speaker_modes"]["A"],
@@ -691,6 +973,7 @@ def dialogue_report_markdown(result: dict) -> str:
                 tools=session["tool_steps"],
                 writes=session["memory_writes"],
                 memory_ctx=session["memory_context_injections"],
+                retrieval_ctx=session.get("retrieval_context_injections", 0),
                 recoveries=session["protocol_recoveries"],
                 parse_errors=session["json_parse_errors"],
                 prompt=usage.get("prompt_tokens", 0),
@@ -699,6 +982,8 @@ def dialogue_report_markdown(result: dict) -> str:
                 total=coverage.get("total", 0),
                 probe_passed=probes.get("passed", 0),
                 probe_total=probes.get("total", 0),
+                relation_passed=relations.get("passed", 0),
+                relation_total=relations.get("total", 0),
             )
         )
     lines.extend(
@@ -706,7 +991,7 @@ def dialogue_report_markdown(result: dict) -> str:
             "",
             "## Review Lenses",
             "",
-            "Raw/raw is the sampling baseline. Centerline-only adds deterministic navigation without the JSON/tool protocol. Write-no-recall uses the same writing runtime but blocks every read path and injects no saved notes. Scratchpad/scratchpad enables both writing and later recall. Mixed sessions, when selected, expose position effects.",
+            "Raw/raw is the sampling baseline. Centerline-only adds deterministic navigation without the JSON/tool protocol. Write-no-recall uses the same writing runtime but blocks every read path and injects no saved notes. Probe-top1 and probe-top2 keep those read actions blocked and inject only the top one or two lexical hits at frozen probe turns. Scratchpad/scratchpad enables writing plus recent-note recall throughout. Mixed sessions, when selected, expose position effects.",
             "",
         ]
     )
@@ -715,7 +1000,7 @@ def dialogue_report_markdown(result: dict) -> str:
     lines.extend(
         [
             "",
-            "Literal probes report exact term presence at frozen turns; they are not semantic quality scores. No automatic quality winner is declared, and transcripts plus deterministic usage/tool evidence remain separate from interpretation.",
+            "Literal probes report exact term presence. Relation probes additionally require before/after role assignment, order, and a stated boundary term. Neither is a complete semantic quality score. No automatic quality winner is declared, and transcripts plus deterministic usage/tool evidence remain separate from interpretation.",
             "",
         ]
     )
@@ -860,6 +1145,9 @@ def run_dialogue_matrix(
                 "tool_steps": 0,
                 "memory_writes": 0,
                 "memory_context_injections": 0,
+                "retrieval_context_injections": 0,
+                "retrieval_context_sources": 0,
+                "retrieval_context_chars": 0,
                 "protocol_recoveries": 0,
                 "json_parse_errors": 0,
                 "usage": empty_usage(),
@@ -912,8 +1200,20 @@ def run_dialogue_matrix(
                         scratch_root, tdir, thread_id = scratchpads[speaker]
                         mode_recent_n = recent_n if mode == "scratchpad" else 0
                         allowed_actions = (
-                            {"scratchpad.add_note"} if mode == "write-no-recall" else None
+                            {"scratchpad.add_note"}
+                            if mode in {"write-no-recall", "probe-top1", "probe-top2"}
+                            else None
                         )
+                        selective_recall = scenario["selective_recall"]
+                        retrieval_active = (
+                            mode in {"probe-top1", "probe-top2"}
+                            and turn in selective_recall["turns"]
+                        )
+                        retrieval_query = incoming
+                        if selective_recall["query_source"] == "intervention":
+                            retrieval_query = "\n\n".join(
+                                item["message"] for item in current_interventions
+                            )
                         events = []
                         message = run_chat_turn(
                             root=scratch_root,
@@ -942,6 +1242,15 @@ def run_dialogue_matrix(
                             trace_io=True,
                             history_chars=history_chars,
                             allowed_actions=allowed_actions,
+                            retrieval_query=retrieval_query if retrieval_active else "",
+                            retrieval_top=(
+                                (1 if mode == "probe-top1" else 2)
+                                if retrieval_active
+                                else 0
+                            ),
+                            retrieval_max_chars=selective_recall[
+                                "max_chars_per_doc"
+                            ],
                         )
                         turn_summary = summarize_scratchpad_turn(events, message)
                 except SystemExit as exc:
@@ -988,6 +1297,15 @@ def run_dialogue_matrix(
                 session["memory_context_injections"] += int(
                     turn_summary.get("memory_context_injections", 0)
                 )
+                session["retrieval_context_injections"] += int(
+                    turn_summary.get("retrieval_context_injections", 0)
+                )
+                session["retrieval_context_sources"] += int(
+                    turn_summary.get("retrieval_context_sources", 0)
+                )
+                session["retrieval_context_chars"] += int(
+                    turn_summary.get("retrieval_context_chars", 0)
+                )
                 session["protocol_recoveries"] += int(
                     turn_summary.get("protocol_recoveries", 0)
                 )
@@ -1018,6 +1336,9 @@ def run_dialogue_matrix(
             session["anchor_coverage"] = anchor_coverage(records, scenario["anchors"])
             session["literal_probe_evidence"] = literal_probe_evidence(
                 records, scenario["literal_probes"]
+            )
+            session["relation_probe_evidence"] = relation_probe_evidence(
+                records, scenario["relation_probes"]
             )
             session["updated_at"] = now_iso()
             transcript_md_path.write_text(

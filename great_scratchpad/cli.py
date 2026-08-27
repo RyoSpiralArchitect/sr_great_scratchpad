@@ -13,6 +13,7 @@ from .dialogue import resolve_dialogue_conditions, run_dialogue_matrix
 from .experiments import add_run_id, default_manifest_path, make_run_id, run_scenario_profiles, trace_summary, write_manifest
 from .llm import call_llm_result, draft_annotation, extract_json_object, llm_config_metadata, print_annotation
 from .memory import add_turn, apply_review_item, apply_safe_review_items, audit_review_item, build_context_pack, compact_one_range, edit_review_item, iter_review_items, load_review_item, recent_turn_files, reject_review_item, render_audit, render_recent_turns, render_review_item, retrieve, review_item_is_safe
+from .retrieval_benchmark import benchmark_dialogue_retrieval
 from .semantics import analyze_dialogue_semantics
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
@@ -796,6 +797,32 @@ def cmd_experiment(args: argparse.Namespace) -> None:
             )
         return
 
+    if args.experiment_cmd == "retrieval":
+        result = benchmark_dialogue_retrieval(
+            run_dir=Path(args.run_dir),
+            taxonomy_path=Path(args.taxonomy),
+            out_prefix=Path(args.out_prefix) if args.out_prefix else None,
+            distractor_limit=args.distractor_limit,
+            max_chars_per_doc=args.max_chars_per_doc,
+            query_sources=[
+                value.strip()
+                for value in args.query_sources.split(",")
+                if value.strip()
+            ],
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+        print(f"Wrote retrieval benchmark report: {result['output']['report_path']}")
+        print(f"Wrote retrieval benchmark data: {result['output']['json_path']}")
+        for summary in result["summaries"]:
+            print(
+                f"{summary['query_source']}/{summary['scope']}\tn={summary['cases']}\t"
+                f"r@1={summary['recall_at']['1']:.3f}\t"
+                f"r@2={summary['recall_at']['2']:.3f}\tmrr={summary['mrr']:.3f}"
+            )
+        return
+
     if args.experiment_cmd == "dialogue":
         conditions = resolve_dialogue_conditions(
             args.conditions,
@@ -1389,6 +1416,37 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.set_defaults(func=cmd_experiment)
 
     sp2 = experiment_sub.add_parser(
+        "retrieval",
+        help="Benchmark frozen dialogue-note retrieval without provider calls.",
+    )
+    sp2.add_argument("run_dir", help="Completed dialogue run directory containing suite_manifest.json.")
+    sp2.add_argument("--taxonomy", required=True, help="Frozen semantic taxonomy JSON path.")
+    sp2.add_argument(
+        "--out-prefix",
+        default=None,
+        help="Output prefix. Default: RUN_DIR/retrieval_benchmark",
+    )
+    sp2.add_argument(
+        "--distractor-limit",
+        type=int,
+        default=24,
+        help="Hard non-target notes added per stress case; 0 uses all available notes.",
+    )
+    sp2.add_argument(
+        "--max-chars-per-doc",
+        type=int,
+        default=700,
+        help="Compact top-hit injection ceiling used for overhead reporting.",
+    )
+    sp2.add_argument(
+        "--query-sources",
+        default="intervention,current-message",
+        help="Comma-separated query sources: intervention,current-message.",
+    )
+    sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")
+    sp2.set_defaults(func=cmd_experiment)
+
+    sp2 = experiment_sub.add_parser(
         "dialogue-nlp",
         help="Measure frozen dialogue and note semantics with auditable character n-gram NLP.",
     )
@@ -1416,9 +1474,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp2.add_argument(
         "--preset",
-        choices=("matrix", "ablation"),
+        choices=("matrix", "ablation", "mechanism"),
         default="matrix",
-        help="matrix compares raw/scratchpad pairings; ablation isolates centerline, write, and recall.",
+        help="matrix compares raw/scratchpad pairings; ablation isolates centerline, write, and recall; mechanism compares no recall, probe-only top-1/top-2, and full recall.",
     )
     sp2.add_argument(
         "--no-mirror-mixed",

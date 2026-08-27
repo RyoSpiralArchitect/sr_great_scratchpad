@@ -295,6 +295,34 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
 
 `ablation` は `raw/raw`、`centerline-only`、`write-no-recall`、`scratchpad/scratchpad` の4条件です。`--rotate-condition-order` はreplicateごとに順序を巡回し、n=4では各条件を各実行位置へ一度ずつ置きます。全条件の通常会話履歴は最新側から同じ文字数だけ残します。`write-no-recall` は note を保存しますが、保存済みnoteの自動注入と全read actionを閉じるため、「書いたこと」自体と「後で読めたこと」を分離できます。600-token枠はvalidなaction/finalで共有し、invalid JSONは別の有界repair reserveへ計上します。literal probe は凍結turnでの語の出現だけを報告し、意味的な勝者判定には使いません。大きな反復を始める前に、`--replicates 1` と対応する低い上限で校正してください。
 
+遅延probeだけへ選択的にnoteを注入し、top-kとfull recallを分けるmechanism校正:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset mechanism \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 1 \
+  --turn-output-tokens 600 \
+  --max-api-calls 144 \
+  --max-suite-output-tokens 48000
+```
+
+`mechanism` は `write-no-recall`、`probe-top1`、`probe-top2`、`scratchpad/scratchpad` の4条件です。probe条件はmodelからのread actionを閉じたまま、scenarioで凍結したturnだけmoderator interventionをqueryに使い、compact化した上位1件または2件を直接注入します。traceにはquery、score、source path、元文字数、注入文字数が残ります。relation probeは単語の有無だけでなく、変更前・変更後の役割、順序、アナロジー限界を検査します。
+
+既存runのretrievalをprovider callなしで再生し、own-threadとhard-distractor stressを分けて測る:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment retrieval \
+  .great_scratchpad/runs/YOUR_DIALOGUE_RUN \
+  --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json \
+  --distractor-limit 24
+```
+
+reportは `intervention` とfull `current-message` queryを別々に、Recall@1/2/3/5、MRR、候補数、compact注入文字数とともに出します。n=8へのpost-hoc適用と次回校正の境界は [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) にあります。
+
 凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
 
 ```bash
@@ -303,7 +331,7 @@ python3 -S sr_great_scratchpad.py experiment dialogue-nlp \
   --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json
 ```
 
-生成scenarioと評価taxonomyは別identityとしてSHA-256を記録します。reportは意味フレーム占有率、note内容、反復類似度、noteのprovider-visible promptへの包含、note→遅延応答類似度、paired treatment差、固定seed bootstrap区間、literalの対応表を分けて出力します。これは監査可能な語彙・意味測定であり、LLM judgeや真偽判定ではありません。反復拡張の事前計画は [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md)、n=4実行結果は [`docs/luna-delayed-recall-n4.md`](docs/luna-delayed-recall-n4.md) にあります。
+生成scenarioと評価taxonomyは別identityとしてSHA-256を記録します。reportは意味フレーム占有率、note内容、反復類似度、noteのprovider-visible promptへの包含、note→遅延応答類似度、paired treatment差、固定seed bootstrap区間、literalとrelationの対応表を分けて出力します。これは監査可能な語彙・意味測定であり、LLM judgeや真偽判定ではありません。反復拡張の事前計画は [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md)、n=4実行結果は [`docs/luna-delayed-recall-n4.md`](docs/luna-delayed-recall-n4.md) にあります。
 
 ### Live run
 
@@ -601,6 +629,34 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
 
 The ablation conditions are `raw/raw`, `centerline-only`, `write-no-recall`, and `scratchpad/scratchpad`. `--rotate-condition-order` cycles the order by replicate, placing every condition in every execution position once at n=4. Every condition receives the same newest-first ordinary-dialogue window. Write-no-recall persists notes but disables automatic note injection and all read actions, separating the act of writing from later availability. The 600-token allowance is pooled across valid actions and finals; invalid JSON is charged to a separate bounded repair reserve. Frozen-turn literal probes report exact lexical evidence only; they do not declare a semantic winner. Calibrate with one replicate and proportionally lower caps before a larger run.
 
+Calibrate selective recall at the delayed probe while separating top-k from full recall:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset mechanism \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 1 \
+  --turn-output-tokens 600 \
+  --max-api-calls 144 \
+  --max-suite-output-tokens 48000
+```
+
+The `mechanism` preset runs `write-no-recall`, `probe-top1`, `probe-top2`, and `scratchpad/scratchpad`. Probe conditions keep model-requested read actions blocked and use only the frozen moderator intervention to retrieve one or two compact notes at selected turns. Traces retain the query, score, source path, source characters, and injected characters. Relation probes require the old and new levels to occupy the requested before/after roles, in order, with an explicit analogy boundary.
+
+Replay retrieval over a frozen run without provider calls:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment retrieval \
+  .great_scratchpad/runs/YOUR_DIALOGUE_RUN \
+  --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json \
+  --distractor-limit 24
+```
+
+The report separates intervention-only and full-current-message queries, own-thread and hard-distractor scopes, Recall@1/2/3/5, MRR, candidate counts, and compact injection characters. See [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) for the post-hoc n=8 result and the next calibration boundary.
+
 Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
 
 ```bash
@@ -609,7 +665,7 @@ python3 -S sr_great_scratchpad.py experiment dialogue-nlp \
   --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json
 ```
 
-Generation scenarios and assessment taxonomies retain separate SHA-256 identities. The report separates semantic-frame occupancy, note contents, repetition similarity, provider-visible note containment, note-to-delayed-response similarity, paired treatment contrasts, a fixed-seed bootstrap interval, and paired literal outcomes. This is an auditable lexical-semantic measure, not an LLM judge or factuality scorer. See [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md) for the preregistered replication path, [`docs/luna-delayed-recall-n4.md`](docs/luna-delayed-recall-n4.md) for the Stage 1 pilot, and [`docs/luna-delayed-recall-n8.md`](docs/luna-delayed-recall-n8.md) for the independent confirmation.
+Generation scenarios and assessment taxonomies retain separate SHA-256 identities. The report separates semantic-frame occupancy, note contents, repetition similarity, provider-visible note containment, note-to-delayed-response similarity, paired treatment contrasts, a fixed-seed bootstrap interval, and paired literal and relation outcomes. This is an auditable lexical-semantic measure, not an LLM judge or factuality scorer. See [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md) for the preregistered replication path, [`docs/luna-delayed-recall-n4.md`](docs/luna-delayed-recall-n4.md) for the Stage 1 pilot, and [`docs/luna-delayed-recall-n8.md`](docs/luna-delayed-recall-n8.md) for the independent confirmation.
 
 ### Live Run
 

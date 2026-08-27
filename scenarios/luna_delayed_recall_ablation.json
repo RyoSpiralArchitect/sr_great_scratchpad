@@ -56,6 +56,51 @@
       ]
     }
   ],
+  "relation_probes": [
+    {
+      "id": "delayed-level-transition",
+      "turn": 11,
+      "before_markers": [
+        "変更前",
+        "補正前"
+      ],
+      "before_terms": [
+        "種間",
+        "種ごと",
+        "種レベル",
+        "種・生物全体"
+      ],
+      "after_markers": [
+        "変更後",
+        "補正後"
+      ],
+      "after_terms": [
+        "個体内",
+        "一個体",
+        "単一個体"
+      ],
+      "boundary_terms": [
+        "限界",
+        "尺度",
+        "同一視",
+        "因果",
+        "形成原因",
+        "限られ",
+        "対応しません",
+        "比較できません",
+        "一致しません"
+      ],
+      "boundary_match": "any",
+      "max_marker_gap": 56
+    }
+  ],
+  "selective_recall": {
+    "turns": [
+      11
+    ],
+    "max_chars_per_doc": 700,
+    "query_source": "intervention"
+  },
   "review_questions": [
     "通常履歴から補正が消えた後の turn 11 で、個体内差と種間差を区別して復元できたか。",
     "centerline-only は記憶なしでも現在の中心整理を改善したか。",

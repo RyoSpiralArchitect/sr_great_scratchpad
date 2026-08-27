@@ -8,6 +8,7 @@ import unicodedata
 from collections import Counter
 from pathlib import Path
 
+from .dialogue import RELATION_PROBE_METHOD, relation_probe_evidence
 from .storage import safe_id
 
 SEMANTIC_METHOD = "char-ngram-tfidf-prototype-v1"
@@ -231,6 +232,53 @@ def load_semantic_taxonomy(path: Path) -> dict:
     if not frames:
         raise SystemExit("Semantic taxonomy requires at least one frame.")
 
+    relation_probes: list[dict] = []
+    for item in taxonomy.get("relation_probes", []):
+        if not isinstance(item, dict):
+            raise SystemExit("Each semantic relation probe must be a JSON object.")
+        probe_id = safe_id(str(item.get("id", "")).strip())
+        try:
+            turn = int(item.get("turn"))
+            max_marker_gap = int(item.get("max_marker_gap", 80))
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                "Semantic relation probe turn and max_marker_gap must be integers."
+            ) from exc
+        before_markers = [str(value).strip() for value in item.get("before_markers", []) if str(value).strip()]
+        before_terms = [str(value).strip() for value in item.get("before_terms", []) if str(value).strip()]
+        after_markers = [str(value).strip() for value in item.get("after_markers", []) if str(value).strip()]
+        after_terms = [str(value).strip() for value in item.get("after_terms", []) if str(value).strip()]
+        boundary_terms = [str(value).strip() for value in item.get("boundary_terms", []) if str(value).strip()]
+        boundary_match = str(item.get("boundary_match", "any")).strip().lower()
+        if (
+            not probe_id
+            or turn < 1
+            or max_marker_gap < 1
+            or not before_markers
+            or not before_terms
+            or not after_markers
+            or not after_terms
+            or not boundary_terms
+            or boundary_match not in {"all", "any"}
+        ):
+            raise SystemExit(
+                "Semantic relation probes require id, turn >= 1, before/after markers "
+                "and terms, boundary_terms, boundary_match=all|any, and max_marker_gap >= 1."
+            )
+        relation_probes.append(
+            {
+                "id": probe_id,
+                "turn": turn,
+                "before_markers": before_markers,
+                "before_terms": before_terms,
+                "after_markers": after_markers,
+                "after_terms": after_terms,
+                "boundary_terms": boundary_terms,
+                "boundary_match": boundary_match,
+                "max_marker_gap": max_marker_gap,
+            }
+        )
+
     targets: list[dict] = []
     for item in taxonomy.get("targets", []):
         if not isinstance(item, dict):
@@ -244,10 +292,29 @@ def load_semantic_taxonomy(path: Path) -> dict:
             turn = int(item.get("turn"))
         except (TypeError, ValueError) as exc:
             raise SystemExit("Semantic target turn must be an integer.") from exc
+        source_turn_raw = item.get("source_turn")
+        try:
+            source_turn = (
+                int(source_turn_raw) if source_turn_raw is not None else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("Semantic target source_turn must be an integer.") from exc
         frame_id = safe_id(raw_frame_id)
-        if not target_id or turn < 1 or frame_id not in seen:
+        if (
+            not target_id
+            or turn < 1
+            or frame_id not in seen
+            or (source_turn is not None and (source_turn < 1 or source_turn >= turn))
+        ):
             raise SystemExit("Semantic targets require id, turn >= 1, and a known frame_id.")
-        targets.append({"id": target_id, "turn": turn, "frame_id": frame_id})
+        targets.append(
+            {
+                "id": target_id,
+                "turn": turn,
+                "frame_id": frame_id,
+                "source_turn": source_turn,
+            }
+        )
 
     contrasts: list[dict] = []
     for item in taxonomy.get("contrasts", []):
@@ -278,6 +345,7 @@ def load_semantic_taxonomy(path: Path) -> dict:
         "id": str(taxonomy.get("id", path.stem)),
         "title": str(taxonomy.get("title", taxonomy.get("id", path.stem))),
         "frames": frames,
+        "relation_probes": relation_probes,
         "targets": targets,
         "contrasts": contrasts,
         "_path": str(path),
@@ -495,6 +563,30 @@ def _probe_score(manifest: dict, turn: int) -> tuple[int, int, list[dict]]:
     return sum(1 for item in results if item.get("passed")), len(results), results
 
 
+def _relation_probe_results(manifest: dict, turn: int) -> list[dict]:
+    evidence = manifest.get("relation_probe_evidence", {})
+    results = [item for item in evidence.get("results", []) if int(item.get("turn", 0)) == turn]
+    return [
+        {
+            "id": str(item.get("id", f"relation-{index:02d}")),
+            "passed": bool(item.get("passed")),
+            "order_passed": bool(item.get("order_passed")),
+            "boundary_passed": bool(item.get("boundary_passed")),
+            "reversed_roles": bool(item.get("reversed_roles")),
+            "before_matches": list(item.get("before_matches", [])),
+            "after_matches": list(item.get("after_matches", [])),
+            "boundary_found": [str(value) for value in item.get("boundary_found", [])],
+            "boundary_missing": [str(value) for value in item.get("boundary_missing", [])],
+        }
+        for index, item in enumerate(results, start=1)
+    ]
+
+
+def _relation_probe_score(manifest: dict, turn: int) -> tuple[int, int, list[dict]]:
+    results = _relation_probe_results(manifest, turn)
+    return sum(1 for item in results if item.get("passed")), len(results), results
+
+
 def analyze_dialogue_semantics(
     run_dir: Path,
     taxonomy_path: Path,
@@ -561,9 +653,20 @@ def analyze_dialogue_semantics(
                 for note in notes
                 if note["speaker"] == target_document["speaker"] and int(note["turn"]) < target["turn"]
             ]
-            candidate_notes.sort(
-                key=lambda note: (-note["frame_scores"][target["frame_id"]], int(note["turn"]))
-            )
+            if target.get("source_turn") is not None:
+                candidate_notes = [
+                    note
+                    for note in candidate_notes
+                    if int(note["turn"]) == int(target["source_turn"])
+                ]
+                candidate_notes.sort(key=lambda note: str(note["id"]))
+            else:
+                candidate_notes.sort(
+                    key=lambda note: (
+                        -note["frame_scores"][target["frame_id"]],
+                        int(note["turn"]),
+                    )
+                )
             source_note = candidate_notes[0] if candidate_notes else None
             prompt = context["prompts"].get((target["turn"], target_document["speaker"]), "")
             containment = (
@@ -571,6 +674,26 @@ def analyze_dialogue_semantics(
             )
             probe_passed, probe_total, probe_results = _probe_score(
                 context["manifest"], target["turn"]
+            )
+            relation_manifest = context["manifest"]
+            relation_probe_source = "generation-manifest"
+            if taxonomy["relation_probes"]:
+                relation_probe_source = "assessment-taxonomy"
+                relation_manifest = {
+                    "relation_probe_evidence": relation_probe_evidence(
+                        [
+                            {
+                                "kind": "utterance",
+                                "turn": target["turn"],
+                                "speaker": target_document["speaker"],
+                                "message": target_document["text"],
+                            }
+                        ],
+                        taxonomy["relation_probes"],
+                    )
+                }
+            relation_passed, relation_total, relation_results = _relation_probe_score(
+                relation_manifest, target["turn"]
             )
             target_results.append(
                 {
@@ -586,6 +709,10 @@ def analyze_dialogue_semantics(
                     "literal_probe_passed": probe_passed,
                     "literal_probe_total": probe_total,
                     "literal_probe_results": probe_results,
+                    "relation_probe_passed": relation_passed,
+                    "relation_probe_total": relation_total,
+                    "relation_probe_results": relation_results,
+                    "relation_probe_source": relation_probe_source,
                     "source_note_id": source_note["id"] if source_note else None,
                     "source_note_turn": source_note["turn"] if source_note else None,
                     "source_note_frame_score": (
@@ -688,6 +815,24 @@ def analyze_dialogue_semantics(
                     "control_literal_probe_total": control["literal_probe_total"],
                     "treatment_literal_probe_results": treatment["literal_probe_results"],
                     "control_literal_probe_results": control["literal_probe_results"],
+                    "treatment_relation_probe_passed": treatment[
+                        "relation_probe_passed"
+                    ],
+                    "treatment_relation_probe_total": treatment[
+                        "relation_probe_total"
+                    ],
+                    "control_relation_probe_passed": control[
+                        "relation_probe_passed"
+                    ],
+                    "control_relation_probe_total": control[
+                        "relation_probe_total"
+                    ],
+                    "treatment_relation_probe_results": treatment[
+                        "relation_probe_results"
+                    ],
+                    "control_relation_probe_results": control[
+                        "relation_probe_results"
+                    ],
                 }
             )
 
@@ -711,6 +856,20 @@ def analyze_dialogue_semantics(
             and item["control_literal_probe_total"] > 0
         ]
         item_literal_pairs: list[tuple[bool, bool]] = []
+        session_relation_pairs = [
+            (
+                item["treatment_relation_probe_total"] > 0
+                and item["treatment_relation_probe_passed"]
+                == item["treatment_relation_probe_total"],
+                item["control_relation_probe_total"] > 0
+                and item["control_relation_probe_passed"]
+                == item["control_relation_probe_total"],
+            )
+            for item in instances
+            if item["treatment_relation_probe_total"] > 0
+            and item["control_relation_probe_total"] > 0
+        ]
+        item_relation_pairs: list[tuple[bool, bool]] = []
         for item in instances:
             treatment_items = {
                 probe["id"]: bool(probe["passed"])
@@ -723,6 +882,20 @@ def analyze_dialogue_semantics(
             item_literal_pairs.extend(
                 (treatment_items[probe_id], control_items[probe_id])
                 for probe_id in sorted(treatment_items.keys() & control_items.keys())
+            )
+            treatment_relations = {
+                probe["id"]: bool(probe["passed"])
+                for probe in item["treatment_relation_probe_results"]
+            }
+            control_relations = {
+                probe["id"]: bool(probe["passed"])
+                for probe in item["control_relation_probe_results"]
+            }
+            item_relation_pairs.extend(
+                (treatment_relations[probe_id], control_relations[probe_id])
+                for probe_id in sorted(
+                    treatment_relations.keys() & control_relations.keys()
+                )
             )
         contrasts.append(
             {
@@ -751,6 +924,20 @@ def analyze_dialogue_semantics(
                     session_literal_pairs
                 ),
                 "literal_item_outcomes": paired_binary_outcome_table(item_literal_pairs),
+                "treatment_relation_probe": (
+                    f"{sum(item['treatment_relation_probe_passed'] for item in instances)}/"
+                    f"{sum(item['treatment_relation_probe_total'] for item in instances)}"
+                ),
+                "control_relation_probe": (
+                    f"{sum(item['control_relation_probe_passed'] for item in instances)}/"
+                    f"{sum(item['control_relation_probe_total'] for item in instances)}"
+                ),
+                "relation_session_outcomes": paired_binary_outcome_table(
+                    session_relation_pairs
+                ),
+                "relation_item_outcomes": paired_binary_outcome_table(
+                    item_relation_pairs
+                ),
             }
         )
 
@@ -779,7 +966,7 @@ def analyze_dialogue_semantics(
         else run_dir / "semantic_analysis"
     )
     result: dict = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generation_identity": {
             "run_id": suite.get("run_id"),
             "scenario_sha256": suite.get("scenario_sha256"),
@@ -794,6 +981,7 @@ def analyze_dialogue_semantics(
             "score_weights": SEMANTIC_SCORE_WEIGHTS,
             "min_score": SEMANTIC_MIN_SCORE,
             "relative_label_threshold": SEMANTIC_RELATIVE_LABEL_THRESHOLD,
+            "relation_probe_method": RELATION_PROBE_METHOD,
             "paired_bootstrap": {
                 "seed": SEMANTIC_BOOTSTRAP_SEED,
                 "resamples": SEMANTIC_BOOTSTRAP_RESAMPLES,
@@ -902,19 +1090,21 @@ def semantic_report_markdown(result: dict) -> str:
     lines.extend(["", "## Delayed Targets", ""])
     lines.extend(
         [
-            "| Session | Target frame | Score | Primary | Literal | Note visible | Note-response sim |",
-            "|---|---|---:|---|---:|---:|---:|",
+            "| Session | Target frame | Score | Primary | Literal | Relation | Note visible | Note-response sim |",
+            "|---|---|---:|---|---:|---:|---:|---:|",
         ]
     )
     for target in result["targets"]:
         lines.append(
-            "| {condition} | {frame} | {score} | {primary} | {passed}/{total} | {visible} | {similarity} |".format(
+            "| {condition} | {frame} | {score} | {primary} | {passed}/{total} | {relation_passed}/{relation_total} | {visible} | {similarity} |".format(
                 condition=f"{target['condition']}-r{target['replicate']:02d}",
                 frame=target["frame_id"],
                 score=_score(target["frame_score"]),
                 primary=target["primary_frame"],
                 passed=target["literal_probe_passed"],
                 total=target["literal_probe_total"],
+                relation_passed=target["relation_probe_passed"],
+                relation_total=target["relation_probe_total"],
                 visible="yes" if target["note_visible"] else "no",
                 similarity=_score(target["note_response_similarity"]),
             )
@@ -924,8 +1114,8 @@ def semantic_report_markdown(result: dict) -> str:
         lines.extend(["", "## Frozen Contrasts", ""])
         lines.extend(
             [
-                "| Contrast | n | Treatment | Control | Mean delta | Bootstrap CI | Median | Positive | Note visibility rate | Literal probes | Literal discordance |",
-                "|---|---:|---|---|---:|---|---:|---:|---|---|---|",
+                "| Contrast | n | Treatment | Control | Mean delta | Bootstrap CI | Median | Positive | Note visibility rate | Literal probes | Relation probes | Literal discordance | Relation discordance |",
+                "|---|---:|---|---|---:|---|---:|---:|---|---|---|---|---|",
             ]
         )
         for contrast in result["contrasts"]:
@@ -937,7 +1127,9 @@ def semantic_report_markdown(result: dict) -> str:
                 f"{contrast['positive_delta_replicates']}/{contrast['replicates']} | "
                 f"{_score(contrast['treatment_note_visible_rate'])} / {_score(contrast['control_note_visible_rate'])} | "
                 f"{contrast['treatment_literal_probe']} / {contrast['control_literal_probe']} | "
-                f"{contrast['literal_session_outcomes']['treatment_only']} / {contrast['literal_session_outcomes']['control_only']} |"
+                f"{contrast['treatment_relation_probe']} / {contrast['control_relation_probe']} | "
+                f"{contrast['literal_session_outcomes']['treatment_only']} / {contrast['literal_session_outcomes']['control_only']} | "
+                f"{contrast['relation_session_outcomes']['treatment_only']} / {contrast['relation_session_outcomes']['control_only']} |"
             )
 
     lines.extend(["", "## Representative Passages", ""])

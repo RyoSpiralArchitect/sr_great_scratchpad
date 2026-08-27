@@ -149,7 +149,7 @@ def chat_runtime_system(policy: str = "balanced") -> str:
     )
 CHAT_PROMPT_TEMPLATE = """Thread: {thread_id}
 
-Recent scratchpad context:
+Scratchpad context supplied for this turn:
 ---
 {recent_context}
 ---

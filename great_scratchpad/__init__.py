@@ -9,7 +9,11 @@ from .dialogue import *
 from .experiments import *
 from .llm import *
 from .memory import *
-from .semantics import analyze_dialogue_semantics as analyze_dialogue_semantics
+from .retrieval_benchmark import benchmark_dialogue_retrieval as benchmark_dialogue_retrieval
+from .semantics import (
+    analyze_dialogue_semantics as analyze_dialogue_semantics,
+    load_semantic_taxonomy as load_semantic_taxonomy,
+)
 from .storage import *
 from .text import *
 from .trace import *

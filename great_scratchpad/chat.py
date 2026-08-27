@@ -8,7 +8,7 @@ import time
 from .centerline import analyze_centerline, render_centerline_hints
 from .constants import CHAT_PROMPT_TEMPLATE, chat_runtime_system
 from .llm import call_llm_result, completion_token_count, config_with_output_token_limit, extract_json_object, extract_json_object_with_metadata, llm_config_metadata
-from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_recent_turns, render_search_results
+from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_recent_turns, render_retrieved_turns, render_search_results
 from .storage import now_iso
 from .text import limit_text, limit_text_tail
 
@@ -235,11 +235,30 @@ def run_chat_turn(
     trace_io: bool = False,
     history_chars: int = 4000,
     allowed_actions: set[str] | frozenset[str] | None = None,
+    retrieval_query: str = "",
+    retrieval_top: int = 0,
+    retrieval_max_chars: int = 700,
 ) -> str:
     observations: list[str] = []
-    recent_context = render_recent_turns(tdir, n=recent_n, max_chars=1200)
+    retrieval_sources: list[dict] = []
+    if retrieval_top > 0 and retrieval_query.strip():
+        recent_context, retrieval_sources = render_retrieved_turns(
+            tdir,
+            query=retrieval_query,
+            top=retrieval_top,
+            max_chars_per_doc=retrieval_max_chars,
+        )
+        memory_context_mode = "retrieved" if retrieval_sources else "retrieved-empty"
+    else:
+        recent_context = render_recent_turns(tdir, n=recent_n, max_chars=1200)
+        memory_context_mode = "recent" if recent_n > 0 else "none"
     recent_context_present = recent_context.strip() not in {"", "(no recent turns)"}
-    recent_context_sources = recent_context.count("--- turns/")
+    recent_context_present = recent_context_present and recent_context.strip() != "(no retrieved turns)"
+    recent_context_sources = (
+        len(retrieval_sources)
+        if retrieval_sources
+        else recent_context.count("--- turns/")
+    )
     turn_started = time.perf_counter()
     tool_steps = 0
     model_calls = 0
@@ -259,9 +278,14 @@ def run_chat_turn(
         json_repair_steps=json_repair_steps,
         queue_writes=queue_writes,
         policy=policy,
+        memory_context_mode=memory_context_mode,
         recent_context_present=recent_context_present,
         recent_context_chars=len(recent_context),
         recent_context_sources=recent_context_sources,
+        retrieval_query=retrieval_query if retrieval_top > 0 else "",
+        retrieval_top=retrieval_top,
+        retrieval_max_chars=retrieval_max_chars,
+        retrieval_sources=retrieval_sources,
         output_token_budget=output_token_budget,
         max_model_calls=max_model_calls,
         per_call_output_token_limit=per_call_output_token_limit,
