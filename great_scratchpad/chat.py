@@ -7,10 +7,10 @@ import time
 
 from .centerline import analyze_centerline, render_centerline_hints
 from .constants import CHAT_PROMPT_TEMPLATE, chat_runtime_system
-from .llm import call_llm_result, extract_json_object, llm_config_metadata
-from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_recent_turns, render_search_results
+from .llm import call_llm_result, completion_token_count, config_with_output_token_limit, extract_json_object, extract_json_object_with_metadata, llm_config_metadata
+from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_recent_turns, render_retrieved_turns, render_search_results
 from .storage import now_iso
-from .text import limit_text
+from .text import limit_text, limit_text_tail
 
 def parse_chat_json(text: str) -> dict:
     try:
@@ -31,7 +31,7 @@ def chat_history_text(history: list[dict[str, str]], max_chars: int = 4000) -> s
     for msg in history:
         lines.append(f"{msg['role']}: {msg['content']}")
     text = "\n\n".join(lines).strip()
-    return limit_text(text, max_chars) if text else "(empty)"
+    return limit_text_tail(text, max_chars) if text else "(empty)"
 
 def build_chat_prompt(
     thread_id: str,
@@ -108,6 +108,7 @@ def append_trace_events(path: Path, events: list[dict]) -> None:
 def llm_trace(result: dict) -> dict:
     return {
         "backend": result.get("backend", ""),
+        "adapter": result.get("adapter", ""),
         "profile": result.get("profile", ""),
         "model": result.get("model", ""),
         "model_path": result.get("model_path", ""),
@@ -227,14 +228,44 @@ def run_chat_turn(
     json_repair_steps: int = 1,
     queue_writes: bool = False,
     policy: str = "balanced",
+    output_token_budget: int | None = None,
+    max_model_calls: int | None = None,
+    per_call_output_token_limit: int | None = None,
+    system_addendum: str = "",
+    trace_io: bool = False,
+    history_chars: int = 4000,
+    allowed_actions: set[str] | frozenset[str] | None = None,
+    retrieval_query: str = "",
+    retrieval_top: int = 0,
+    retrieval_max_chars: int = 700,
 ) -> str:
     observations: list[str] = []
-    recent_context = render_recent_turns(tdir, n=recent_n, max_chars=1200)
+    retrieval_sources: list[dict] = []
+    if retrieval_top > 0 and retrieval_query.strip():
+        recent_context, retrieval_sources = render_retrieved_turns(
+            tdir,
+            query=retrieval_query,
+            top=retrieval_top,
+            max_chars_per_doc=retrieval_max_chars,
+        )
+        memory_context_mode = "retrieved" if retrieval_sources else "retrieved-empty"
+    else:
+        recent_context = render_recent_turns(tdir, n=recent_n, max_chars=1200)
+        memory_context_mode = "recent" if recent_n > 0 else "none"
+    recent_context_present = recent_context.strip() not in {"", "(no recent turns)"}
+    recent_context_present = recent_context_present and recent_context.strip() != "(no retrieved turns)"
+    recent_context_sources = (
+        len(retrieval_sources)
+        if retrieval_sources
+        else recent_context.count("--- turns/")
+    )
     turn_started = time.perf_counter()
     tool_steps = 0
     model_calls = 0
     repairs_used = 0
     add_note_requests = 0
+    output_tokens_used = 0
+    repair_output_tokens_used = 0
     centerline = analyze_centerline(user_text, history)
     centerline_hints = render_centerline_hints(centerline)
     record_trace(
@@ -247,6 +278,20 @@ def run_chat_turn(
         json_repair_steps=json_repair_steps,
         queue_writes=queue_writes,
         policy=policy,
+        memory_context_mode=memory_context_mode,
+        recent_context_present=recent_context_present,
+        recent_context_chars=len(recent_context),
+        recent_context_sources=recent_context_sources,
+        retrieval_query=retrieval_query if retrieval_top > 0 else "",
+        retrieval_top=retrieval_top,
+        retrieval_max_chars=retrieval_max_chars,
+        retrieval_sources=retrieval_sources,
+        output_token_budget=output_token_budget,
+        max_model_calls=max_model_calls,
+        per_call_output_token_limit=per_call_output_token_limit,
+        trace_io=trace_io,
+        history_chars=history_chars,
+        allowed_actions=sorted(allowed_actions) if allowed_actions is not None else None,
         llm=llm_config_metadata(cfg),
     )
     record_trace(
@@ -257,8 +302,62 @@ def run_chat_turn(
         **centerline,
     )
     runtime_system = chat_runtime_system(policy)
+    if system_addendum.strip():
+        runtime_system += "\nRuntime context:\n" + system_addendum.strip() + "\n"
+    if allowed_actions is not None:
+        rendered_actions = ", ".join(sorted(allowed_actions)) or "(none)"
+        runtime_system += (
+            "\nRuntime action restriction: only these scratchpad actions are available: "
+            f"{rendered_actions}. Do not request any other scratchpad action.\n"
+        )
 
     while True:
+        if max_model_calls is not None and model_calls >= max(0, max_model_calls):
+            message = "(chat runtime stopped: model call budget reached before final answer)"
+            record_trace(
+                trace_events,
+                "stopped",
+                reason="model_call_budget",
+                message=message,
+                tool_steps=tool_steps,
+                model_calls=model_calls,
+                repair_attempts=repairs_used,
+                output_token_budget=output_token_budget,
+                output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
+                duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
+            )
+            return message
+
+        remaining_output_tokens: int | None = None
+        if output_token_budget is not None:
+            remaining_output_tokens = max(0, int(output_token_budget) - output_tokens_used)
+            if remaining_output_tokens <= 0:
+                message = "(chat runtime stopped: output token budget reached before final answer)"
+                record_trace(
+                    trace_events,
+                    "stopped",
+                    reason="output_token_budget",
+                    message=message,
+                    tool_steps=tool_steps,
+                    model_calls=model_calls,
+                    repair_attempts=repairs_used,
+                    output_token_budget=output_token_budget,
+                    output_tokens_used=output_tokens_used,
+                    repair_output_tokens_used=repair_output_tokens_used,
+                    duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
+                )
+                return message
+
+        request_output_tokens = remaining_output_tokens
+        if per_call_output_token_limit is not None:
+            per_call_limit = max(1, int(per_call_output_token_limit))
+            request_output_tokens = (
+                min(request_output_tokens, per_call_limit)
+                if request_output_tokens is not None
+                else per_call_limit
+            )
+
         prompt = build_chat_prompt(
             thread_id=thread_id,
             user_text=user_text,
@@ -266,9 +365,33 @@ def run_chat_turn(
             history=history,
             observations=observations,
             centerline_hints=centerline_hints,
+            history_chars=history_chars,
         )
+        request_system = runtime_system
+        if add_note_requests > 0:
+            request_system += (
+                "\nA scratchpad.add_note request has already been handled in this turn. "
+                "Do not return another action. Return exactly one final JSON object now.\n"
+            )
+        if trace_io:
+            record_trace(
+                trace_events,
+                "model_request",
+                tool_step=tool_steps,
+                model_calls=model_calls + 1,
+                prompt=prompt,
+                system_prompt=request_system,
+                remaining_output_tokens=remaining_output_tokens,
+                request_output_tokens=request_output_tokens,
+                llm=llm_config_metadata(cfg),
+            )
         try:
-            result = call_llm_result(cfg, prompt, runtime_system)
+            call_cfg = (
+                config_with_output_token_limit(cfg, request_output_tokens)
+                if request_output_tokens is not None
+                else cfg
+            )
+            result = call_llm_result(call_cfg, prompt, request_system)
         except SystemExit as exc:
             record_trace(
                 trace_events,
@@ -280,15 +403,17 @@ def run_chat_turn(
                 llm={
                     **llm_config_metadata(cfg),
                     "prompt_chars": len(prompt),
-                    "system_prompt_chars": len(runtime_system),
+                    "system_prompt_chars": len(request_system),
                 },
             )
             raise
         model_calls += 1
         raw_output = str(result.get("content", ""))
+        call_output_tokens = completion_token_count(result.get("usage"))
         try:
-            obj = extract_json_object(raw_output)
+            obj, parse_metadata = extract_json_object_with_metadata(raw_output)
         except (ValueError, json.JSONDecodeError) as exc:
+            repair_output_tokens_used += call_output_tokens
             record_trace(
                 trace_events,
                 "json_parse_error",
@@ -296,6 +421,7 @@ def run_chat_turn(
                 model_calls=model_calls,
                 error=str(exc),
                 output=limit_text(raw_output, 2000),
+                repair_output_tokens_used=repair_output_tokens_used,
                 llm=llm_trace(result),
             )
             if repairs_used < max(0, json_repair_steps):
@@ -303,7 +429,9 @@ def run_chat_turn(
                 observations.append(
                     "The previous model output was not valid JSON. "
                     f"Parse error: {exc}. "
-                    "Return exactly one JSON object using either a scratchpad action or final message. "
+                    "Return exactly one shorter JSON object using either a scratchpad action or final message. "
+                    "Keep the entire object under 500 characters, shorten optional action fields, "
+                    "and do not append a second object. "
                     f"Previous output excerpt:\n{limit_text(raw_output, 1200)}"
                 )
                 continue
@@ -316,21 +444,44 @@ def run_chat_turn(
                 tool_steps=tool_steps,
                 model_calls=model_calls,
                 repair_attempts=repairs_used,
+                output_token_budget=output_token_budget,
+                output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
+        output_tokens_used += call_output_tokens
+        if parse_metadata.get("recovered"):
+            record_trace(
+                trace_events,
+                "json_protocol_recovery",
+                tool_step=tool_steps,
+                model_calls=model_calls,
+                **parse_metadata,
+            )
         obj = normalize_chat_payload(obj)
-        kind = str(obj.get("type", "")).strip().lower()
-        record_trace(
-            trace_events,
-            "model_output",
-            tool_step=tool_steps,
-            model_calls=model_calls,
-            kind=kind,
-            payload=obj,
-            raw_output_chars=len(raw_output),
-            llm=llm_trace(result),
+        trailing_obj = parse_metadata.get("trailing_object")
+        buffered_final = (
+            normalize_chat_payload(trailing_obj)
+            if isinstance(trailing_obj, dict)
+            else None
         )
+        if buffered_final is not None:
+            trailing_kind = str(buffered_final.get("type", "")).strip().lower()
+            if trailing_kind != "final" and "message" not in buffered_final:
+                buffered_final = None
+        kind = str(obj.get("type", "")).strip().lower()
+        output_fields: dict[str, object] = {
+            "tool_step": tool_steps,
+            "model_calls": model_calls,
+            "kind": kind,
+            "payload": obj,
+            "raw_output_chars": len(raw_output),
+            "llm": llm_trace(result),
+        }
+        if trace_io:
+            output_fields["raw_output"] = raw_output
+        record_trace(trace_events, "model_output", **output_fields)
 
         if kind == "final" or "message" in obj:
             message = str(obj.get("message", "")).strip()
@@ -343,6 +494,9 @@ def run_chat_turn(
                 tool_steps=tool_steps,
                 model_calls=model_calls,
                 repair_attempts=repairs_used,
+                output_token_budget=output_token_budget,
+                output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
@@ -357,9 +511,34 @@ def run_chat_turn(
                 tool_steps=tool_steps,
                 model_calls=model_calls,
                 repair_attempts=repairs_used,
+                output_token_budget=output_token_budget,
+                output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
+
+        action_name = str(obj.get("action", "")).strip()
+        if action_name == "scratchpad.add_note" and add_note_requests > 0:
+            observation = (
+                "scratchpad.add_note skipped: a memory write was already handled "
+                "in this chat turn. Return a final answer next."
+            )
+            record_trace(
+                trace_events,
+                "tool_observation",
+                tool_step=tool_steps,
+                action=action_name,
+                observation=observation,
+                observation_chars=len(observation),
+                duplicate_request=True,
+            )
+            observations.append(
+                f"Duplicate action request: {action_name}\nObservation:\n{observation}"
+            )
+            if verbose:
+                print(limit_text(observation, 800))
+            continue
 
         if tool_steps >= max_steps:
             message = "(chat runtime stopped: max tool steps reached before final answer)"
@@ -371,17 +550,19 @@ def run_chat_turn(
                 tool_steps=tool_steps,
                 model_calls=model_calls,
                 repair_attempts=repairs_used,
+                output_token_budget=output_token_budget,
+                output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
             )
             return message
 
-        action_name = str(obj.get("action", "")).strip()
         if verbose:
             print(f"[tool] {action_name}")
-        if action_name == "scratchpad.add_note" and add_note_requests > 0:
+        if allowed_actions is not None and action_name not in allowed_actions:
             observation = (
-                "scratchpad.add_note skipped: a memory write was already handled "
-                "in this chat turn. Return a final answer next."
+                f"{action_name or 'scratchpad action'} blocked: this condition allows only "
+                f"{', '.join(sorted(allowed_actions)) or '(no actions)'}"
             )
         elif policy == "read-only" and action_name == "scratchpad.add_note":
             observation = "scratchpad.add_note blocked: read-only policy is active"
@@ -408,6 +589,35 @@ def run_chat_turn(
             observation=observation,
             observation_chars=len(observation),
         )
+        if (
+            action_name == "scratchpad.add_note"
+            and buffered_final is not None
+            and (
+                "wrote turn" in observation
+                or "queued for review" in observation
+            )
+        ):
+            message = str(buffered_final.get("message", "")).strip() or "(empty final message)"
+            record_trace(
+                trace_events,
+                "buffered_final_used",
+                source_model_call=model_calls,
+                payload=buffered_final,
+                reason="scratchpad.add_note completed without a content-bearing observation",
+            )
+            record_trace(
+                trace_events,
+                "final",
+                message=message,
+                tool_steps=tool_steps,
+                model_calls=model_calls,
+                repair_attempts=repairs_used,
+                output_token_budget=output_token_budget,
+                output_tokens_used=output_tokens_used,
+                repair_output_tokens_used=repair_output_tokens_used,
+                duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
+            )
+            return message
         observations.append(
             f"Action {len(observations) + 1}: {action_name}\nObservation:\n{observation}"
         )
@@ -423,6 +633,9 @@ def run_chat_turn(
         tool_steps=tool_steps,
         model_calls=model_calls,
         repair_attempts=repairs_used,
+        output_token_budget=output_token_budget,
+        output_tokens_used=output_tokens_used,
+        repair_output_tokens_used=repair_output_tokens_used,
         duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
     )
     return message

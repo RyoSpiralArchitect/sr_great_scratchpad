@@ -14,6 +14,12 @@ import urllib.request
 
 from .constants import ANNOTATION_FIELDS, ANNOTATION_PROMPT_TEMPLATE
 
+OPENAI_CHAT_ADAPTER = "openai-chat-completions"
+OPENAI_RESPONSES_ADAPTER = "openai-responses"
+COMMAND_ADAPTER = "command"
+HUGGINGFACE_ADAPTER = "huggingface"
+
+
 def build_annotation_prompt(raw: str) -> str:
     return ANNOTATION_PROMPT_TEMPLATE.format(raw=raw.strip())
 
@@ -23,19 +29,58 @@ def clip_text(text: str, max_chars: int = 4000) -> str:
         return text
     return text[:max_chars].rstrip() + "\n...[truncated]"
 
-def extract_json_object(text: str) -> dict:
-    text = text.strip()
+def extract_json_object_with_metadata(text: str) -> tuple[dict, dict]:
+    stripped = text.strip()
     try:
-        value = json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("LLM output did not contain a JSON object.") from None
-        value = json.loads(text[start:end + 1])
+        value = json.loads(stripped)
+    except json.JSONDecodeError as strict_error:
+        decoder = json.JSONDecoder()
+        starts = [match.start() for match in re.finditer(r"\{", stripped)]
+        for start in starts:
+            try:
+                candidate, end = decoder.raw_decode(stripped, start)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(candidate, dict):
+                continue
+            prefix = stripped[:start].strip()
+            trailing = stripped[end:].strip()
+            trailing_object = None
+            if trailing:
+                for trailing_start in [match.start() for match in re.finditer(r"\{", trailing)]:
+                    try:
+                        candidate_trailing, _trailing_end = decoder.raw_decode(
+                            trailing, trailing_start
+                        )
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(candidate_trailing, dict):
+                        trailing_object = candidate_trailing
+                        break
+            return candidate, {
+                "mode": "first_complete_object",
+                "recovered": True,
+                "prefix_chars": len(prefix),
+                "trailing_chars": len(trailing),
+                "trailing_excerpt": clip_text(trailing, 600) if trailing else "",
+                "trailing_object": trailing_object,
+                "strict_error": str(strict_error),
+            }
+        raise ValueError("LLM output did not contain a complete JSON object.") from None
 
     if not isinstance(value, dict):
         raise ValueError("LLM output JSON must be an object.")
+    return value, {
+        "mode": "strict",
+        "recovered": False,
+        "prefix_chars": 0,
+        "trailing_chars": 0,
+        "trailing_excerpt": "",
+        "trailing_object": None,
+    }
+
+def extract_json_object(text: str) -> dict:
+    value, _metadata = extract_json_object_with_metadata(text)
     return value
 
 def normalize_annotation(value: dict) -> dict[str, str]:
@@ -80,31 +125,247 @@ def estimated_usage(prompt: str, completion: str) -> dict:
         "estimator": "great_scratchpad_chars_words_v1",
     }
 
+def completion_token_count(usage: dict | None) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    for key in ("completion_tokens", "output_tokens"):
+        try:
+            value = int(usage.get(key, 0))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0
+
+def config_with_output_token_limit(cfg: dict, limit: int) -> dict:
+    if limit <= 0:
+        raise ValueError("Output token limit must be positive.")
+
+    out = dict(cfg)
+    configured: list[int] = []
+    for key in ("max_output_tokens", "max_new_tokens", "max_tokens"):
+        raw = cfg.get(key)
+        if raw in {None, ""}:
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            configured.append(value)
+    effective = min([int(limit), *configured]) if configured else int(limit)
+
+    adapter = resolve_llm_adapter(cfg, strict=False)
+    if adapter == OPENAI_RESPONSES_ADAPTER:
+        out["max_output_tokens"] = effective
+    elif adapter == HUGGINGFACE_ADAPTER:
+        out["max_new_tokens"] = effective
+    else:
+        out["max_tokens"] = effective
+    return out
+
 def expand_command_part(part: str, values: dict[str, str]) -> str:
     out = part
     for key, value in values.items():
         out = out.replace("{" + key + "}", value)
     return out
 
+def normalize_adapter_name(name: str) -> str:
+    adapter = name.strip().lower().replace("_", "-")
+    aliases = {
+        "chat": OPENAI_CHAT_ADAPTER,
+        "chat-completions": OPENAI_CHAT_ADAPTER,
+        "openai-compatible": OPENAI_CHAT_ADAPTER,
+        "provider": OPENAI_CHAT_ADAPTER,
+        "responses": OPENAI_RESPONSES_ADAPTER,
+        "openai": OPENAI_RESPONSES_ADAPTER,
+        "local": COMMAND_ADAPTER,
+        "local-command": COMMAND_ADAPTER,
+        "hf": HUGGINGFACE_ADAPTER,
+        "transformers": HUGGINGFACE_ADAPTER,
+    }
+    return aliases.get(adapter, adapter)
+
+def model_prefers_responses_api(model: str) -> bool:
+    normalized = model.strip().lower()
+    return bool(re.match(r"^gpt-5(?:\.\d+)?(?:-|$)", normalized))
+
+def resolve_llm_adapter(cfg: dict, strict: bool = True) -> str:
+    explicit = str(cfg.get("adapter", "") or cfg.get("api", "")).strip().lower()
+    backend = str(cfg.get("backend", "")).strip().lower().replace("_", "-")
+    model = str(cfg.get("model", "") or cfg.get("request_model", ""))
+
+    if explicit and explicit != "auto":
+        adapter = normalize_adapter_name(explicit)
+    elif backend in {"command", "local", "local-command"}:
+        adapter = COMMAND_ADAPTER
+    elif backend in {"huggingface", "hf", "transformers"}:
+        adapter = HUGGINGFACE_ADAPTER
+    elif backend in {"openai-responses", "responses"}:
+        adapter = OPENAI_RESPONSES_ADAPTER
+    elif backend in {"openai", "openai-api"}:
+        adapter = OPENAI_RESPONSES_ADAPTER if model_prefers_responses_api(model) else OPENAI_CHAT_ADAPTER
+    elif backend in {"openai-compatible", "provider"}:
+        adapter = OPENAI_RESPONSES_ADAPTER if explicit == "auto" and model_prefers_responses_api(model) else OPENAI_CHAT_ADAPTER
+    elif explicit == "auto" and model_prefers_responses_api(model):
+        adapter = OPENAI_RESPONSES_ADAPTER
+    else:
+        adapter = normalize_adapter_name(backend)
+
+    known = {
+        OPENAI_CHAT_ADAPTER,
+        OPENAI_RESPONSES_ADAPTER,
+        COMMAND_ADAPTER,
+        HUGGINGFACE_ADAPTER,
+    }
+    if strict and adapter not in known:
+        raise SystemExit(f"Unknown LLM backend/adapter: backend={cfg.get('backend')!r} adapter={cfg.get('adapter')!r}")
+    return adapter
+
 def llm_config_metadata(cfg: dict) -> dict:
     return {
         "backend": str(cfg.get("backend", "")),
+        "adapter": resolve_llm_adapter(cfg, strict=False),
         "profile": str(cfg.get("profile", "")),
         "model": str(cfg.get("model", "")),
         "model_path": str(cfg.get("model_path", "")),
     }
 
-def call_openai_compatible_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
+def api_key_from_config(cfg: dict) -> str:
     api_key_env = cfg.get("api_key_env", "")
     api_key = os.environ.get(api_key_env, "") if api_key_env else cfg.get("api_key", "")
     if api_key_env and not api_key:
         raise SystemExit(f"Environment variable is not set: {api_key_env}")
+    return str(api_key or "")
 
-    url = cfg.get("base_url") or cfg.get("url")
+def endpoint_url(cfg: dict, suffix: str, default_base_url: str = "") -> str:
+    url = str(cfg.get("base_url") or cfg.get("url") or default_base_url).strip()
     if not url:
-        raise SystemExit("openai-compatible LLM config requires base_url.")
-    if not url.rstrip("/").endswith("/chat/completions"):
-        url = url.rstrip("/") + "/chat/completions"
+        raise SystemExit(f"{cfg.get('backend', 'LLM')} config requires base_url.")
+    suffix = "/" + suffix.strip("/")
+    base = url.rstrip("/")
+    for known_suffix in ("/chat/completions", "/responses"):
+        if base.endswith(known_suffix):
+            base = base[: -len(known_suffix)]
+            break
+    if base.endswith(suffix):
+        return base
+    return base + suffix
+
+def json_mode_enabled(value: object) -> bool:
+    return value is True or str(value).strip().lower() in {"json", "json_object", "true", "1"}
+
+def optional_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    raise SystemExit(f"Expected boolean config value, got {value!r}")
+
+def apply_sampling_params(body: dict, cfg: dict, *, max_token_field: str) -> None:
+    fallback_field = "max_output_tokens" if max_token_field == "max_tokens" else "max_tokens"
+    max_tokens = cfg.get(max_token_field, cfg.get(fallback_field))
+    if max_tokens not in {None, ""}:
+        body[max_token_field] = int(max_tokens)
+    if cfg.get("temperature") not in {None, ""}:
+        body["temperature"] = float(cfg.get("temperature"))
+    if cfg.get("top_p") not in {None, ""}:
+        body["top_p"] = float(cfg.get("top_p"))
+    if cfg.get("seed") not in {None, ""}:
+        body["seed"] = int(cfg.get("seed"))
+    stop = cfg.get("stop")
+    if isinstance(stop, list) and stop:
+        body["stop"] = [str(item) for item in stop]
+    elif isinstance(stop, str) and stop:
+        body["stop"] = stop
+
+def chat_response_format(cfg: dict) -> dict | None:
+    response_format = cfg.get("response_format")
+    if isinstance(response_format, dict):
+        return response_format
+    if json_mode_enabled(cfg.get("json_mode", "")):
+        return {"type": "json_object"}
+    return None
+
+def responses_text_format(cfg: dict) -> dict | None:
+    response_format = cfg.get("response_format")
+    if isinstance(response_format, dict):
+        if response_format.get("type") == "json_schema" and isinstance(response_format.get("json_schema"), dict):
+            schema = response_format["json_schema"]
+            return {
+                "type": "json_schema",
+                "name": schema.get("name", "response"),
+                "schema": schema.get("schema", {}),
+                "strict": bool(schema.get("strict", True)),
+            }
+        return response_format
+    if json_mode_enabled(cfg.get("json_mode", "")):
+        return {"type": "json_object"}
+    return None
+
+def responses_reasoning(cfg: dict) -> dict | None:
+    reasoning = cfg.get("reasoning")
+    out = dict(reasoning) if isinstance(reasoning, dict) else {}
+    for cfg_key, api_key in (
+        ("reasoning_effort", "effort"),
+        ("reasoning_mode", "mode"),
+        ("reasoning_context", "context"),
+    ):
+        value = cfg.get(cfg_key)
+        if value not in {None, ""}:
+            out[api_key] = value
+    return out or None
+
+def extract_responses_text(data: dict) -> str:
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+
+    chunks: list[str] = []
+    output = data.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                chunks.append(content)
+                continue
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str) and part.get("type") in {None, "text", "output_text", "summary_text"}:
+                    chunks.append(text)
+    text = "\n".join(chunk for chunk in chunks if chunk.strip()).strip()
+    if text:
+        return text
+    raise SystemExit(f"Responses API response did not contain output text: {data}")
+
+def normalize_responses_usage(usage: dict, prompt: str, completion: str) -> dict:
+    if not isinstance(usage, dict) or not usage:
+        return estimated_usage(prompt, completion)
+    out = dict(usage)
+    if "prompt_tokens" not in out and "input_tokens" in out:
+        out["prompt_tokens"] = out.get("input_tokens", 0)
+    if "completion_tokens" not in out and "output_tokens" in out:
+        out["completion_tokens"] = out.get("output_tokens", 0)
+    if "total_tokens" not in out:
+        try:
+            out["total_tokens"] = int(out.get("prompt_tokens", 0)) + int(out.get("completion_tokens", 0))
+        except (TypeError, ValueError):
+            out["total_tokens"] = 0
+    return out
+
+def call_openai_compatible_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
+    api_key = api_key_from_config(cfg)
+    url = endpoint_url(cfg, "chat/completions")
 
     body = {
         "model": cfg.get("model", ""),
@@ -115,25 +376,13 @@ def call_openai_compatible_result(cfg: dict, prompt: str, system_prompt: str = "
             },
             {"role": "user", "content": prompt},
         ],
-        "temperature": float(cfg.get("temperature", 0.2)),
-        "max_tokens": int(cfg.get("max_tokens", 900)),
     }
-    if cfg.get("top_p") not in {None, ""}:
-        body["top_p"] = float(cfg.get("top_p"))
-    if cfg.get("seed") not in {None, ""}:
-        body["seed"] = int(cfg.get("seed"))
-    stop = cfg.get("stop")
-    if isinstance(stop, list) and stop:
-        body["stop"] = [str(item) for item in stop]
-    elif isinstance(stop, str) and stop:
-        body["stop"] = stop
-    response_format = cfg.get("response_format")
-    if isinstance(response_format, dict):
+    apply_sampling_params(body, cfg, max_token_field="max_tokens")
+    body.setdefault("temperature", float(cfg.get("temperature", 0.2)))
+    body.setdefault("max_tokens", int(cfg.get("max_tokens", 900)))
+    response_format = chat_response_format(cfg)
+    if response_format:
         body["response_format"] = response_format
-    else:
-        json_mode = cfg.get("json_mode", "")
-        if json_mode is True or str(json_mode).strip().lower() in {"json", "json_object", "true", "1"}:
-            body["response_format"] = {"type": "json_object"}
     if not body["model"]:
         raise SystemExit("openai-compatible LLM config requires model.")
 
@@ -172,10 +421,73 @@ def call_openai_compatible_result(cfg: dict, prompt: str, system_prompt: str = "
         "response_model": data.get("model", ""),
         "request_model": body["model"],
         "url": url,
+        "adapter": OPENAI_CHAT_ADAPTER,
     }
 
 def call_openai_compatible(cfg: dict, prompt: str, system_prompt: str = "") -> str:
     return str(call_openai_compatible_result(cfg, prompt, system_prompt).get("content", ""))
+
+def call_openai_responses_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
+    api_key = api_key_from_config(cfg)
+    url = endpoint_url(cfg, "responses", default_base_url="https://api.openai.com/v1")
+
+    body = {
+        "model": cfg.get("model", ""),
+        "input": prompt,
+        "instructions": system_prompt or cfg.get("system_prompt", "Return the requested response."),
+    }
+    apply_sampling_params(body, cfg, max_token_field="max_output_tokens")
+    body.setdefault("max_output_tokens", int(cfg.get("max_output_tokens", cfg.get("max_tokens", 900))))
+    text_format = responses_text_format(cfg)
+    if text_format:
+        body["text"] = {"format": text_format}
+    reasoning = responses_reasoning(cfg)
+    if reasoning:
+        body["reasoning"] = reasoning
+    if cfg.get("store") not in {None, ""}:
+        body["store"] = optional_bool(cfg.get("store"))
+    if cfg.get("previous_response_id") not in {None, ""}:
+        body["previous_response_id"] = str(cfg.get("previous_response_id"))
+    if cfg.get("safety_identifier") not in {None, ""}:
+        body["safety_identifier"] = str(cfg.get("safety_identifier"))
+    if not body["model"]:
+        raise SystemExit("OpenAI Responses LLM config requires model.")
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=float(cfg.get("timeout", 120))) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"Responses API returned HTTP {exc.code}: {body_text}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"Responses API request failed: {exc}") from exc
+
+    content = extract_responses_text(data)
+    usage = normalize_responses_usage(
+        data.get("usage", {}),
+        compose_text_prompt(system_prompt, prompt),
+        str(content),
+    )
+    return {
+        "content": content,
+        "usage": usage,
+        "response_model": data.get("model", ""),
+        "request_model": body["model"],
+        "response_id": data.get("id", ""),
+        "url": url,
+        "adapter": OPENAI_RESPONSES_ADAPTER,
+    }
 
 def call_command_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
     command = cfg.get("command")
@@ -224,6 +536,7 @@ def call_command_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> 
         "response_model": "",
         "request_model": str(cfg.get("model_path", "")),
         "command": parts,
+        "adapter": COMMAND_ADAPTER,
     }
 
 def call_command_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:
@@ -328,24 +641,28 @@ def call_huggingface_result(cfg: dict, prompt: str, system_prompt: str = "") -> 
         "response_model": model_ref,
         "request_model": model_ref,
         "hidden": hidden_summary,
+        "adapter": HUGGINGFACE_ADAPTER,
     }
 
 def call_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
     started = time.perf_counter()
-    backend = str(cfg.get("backend", "")).lower()
-    if backend in {"openai-compatible", "openai_compatible", "provider"}:
+    adapter = resolve_llm_adapter(cfg)
+    if adapter == OPENAI_CHAT_ADAPTER:
         result = call_openai_compatible_result(cfg, prompt, system_prompt)
-    elif backend in {"command", "local", "local-command"}:
+    elif adapter == OPENAI_RESPONSES_ADAPTER:
+        result = call_openai_responses_result(cfg, prompt, system_prompt)
+    elif adapter == COMMAND_ADAPTER:
         result = call_command_llm_result(cfg, prompt, system_prompt)
-    elif backend in {"huggingface", "hf", "transformers"}:
+    elif adapter == HUGGINGFACE_ADAPTER:
         result = call_huggingface_result(cfg, prompt, system_prompt)
     else:
-        raise SystemExit(f"Unknown LLM backend: {cfg.get('backend')!r}")
+        raise SystemExit(f"Unknown LLM adapter: {adapter!r}")
 
     result.setdefault("usage", {})
     result.update(
         {
             "backend": str(cfg.get("backend", "")),
+            "adapter": str(result.get("adapter", adapter)),
             "profile": str(cfg.get("profile", "")),
             "model": str(cfg.get("model", "") or result.get("request_model", "")),
             "model_path": str(cfg.get("model_path", "")),

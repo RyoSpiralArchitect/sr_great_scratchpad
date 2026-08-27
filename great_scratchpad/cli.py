@@ -4,15 +4,17 @@ import argparse
 import json
 import os
 import shlex
-import sys
 from pathlib import Path
 
 from .audit import audit_turn_md
 from .chat import append_trace_events, run_chat_turn
 from .constants import ACTION_POLICIES, ROOT_DEFAULT
+from .dialogue import resolve_dialogue_conditions, run_dialogue_matrix
 from .experiments import add_run_id, default_manifest_path, make_run_id, run_scenario_profiles, trace_summary, write_manifest
 from .llm import call_llm_result, draft_annotation, extract_json_object, llm_config_metadata, print_annotation
 from .memory import add_turn, apply_review_item, apply_safe_review_items, audit_review_item, build_context_pack, compact_one_range, edit_review_item, iter_review_items, load_review_item, recent_turn_files, reject_review_item, render_audit, render_recent_turns, render_review_item, retrieve, review_item_is_safe
+from .retrieval_benchmark import benchmark_dialogue_retrieval
+from .semantics import analyze_dialogue_semantics
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
 from .trace import load_trace_events, trace_centerline, trace_centerline_markdown, trace_report_data, trace_report_markdown, trace_show
@@ -180,6 +182,49 @@ def cmd_llm_config_show(args: argparse.Namespace) -> None:
         return
     print(path.read_text(encoding="utf-8"))
 
+def _store_common_provider_options(cfg: dict, args: argparse.Namespace, *, max_tokens_key: str) -> None:
+    if getattr(args, "temperature", None) is not None:
+        cfg["temperature"] = args.temperature
+    if getattr(args, "top_p", None) is not None:
+        cfg["top_p"] = args.top_p
+    if getattr(args, "seed", None) is not None:
+        cfg["seed"] = args.seed
+    if getattr(args, "stop", None):
+        cfg["stop"] = args.stop
+    max_tokens = getattr(args, max_tokens_key, None)
+    if max_tokens is not None:
+        cfg[max_tokens_key] = max_tokens
+    json_mode = getattr(args, "json_mode", "off")
+    if json_mode != "off":
+        cfg["json_mode"] = json_mode
+
+def cmd_llm_config_openai(args: argparse.Namespace) -> None:
+    root = root_path(args)
+    ensure_root(root)
+    path = llm_config_path(root, args.config)
+    data = read_llm_config_document(path)
+    profile = args.profile
+    cfg = {
+        "backend": "openai",
+        "adapter": args.adapter,
+        "base_url": args.base_url,
+        "api_key_env": args.api_key_env,
+        "model": args.model,
+        "timeout": args.timeout,
+    }
+    _store_common_provider_options(cfg, args, max_tokens_key="max_output_tokens")
+    if args.reasoning_effort:
+        cfg["reasoning_effort"] = args.reasoning_effort
+    if args.reasoning_mode:
+        cfg["reasoning_mode"] = args.reasoning_mode
+    if args.reasoning_context:
+        cfg["reasoning_context"] = args.reasoning_context
+    data["profiles"][profile] = cfg
+    if args.default or not data.get("default_profile"):
+        data["default_profile"] = profile
+    write_llm_config_document(path, data)
+    print(f"Wrote OpenAI LLM profile {profile!r}: {path}")
+
 def cmd_llm_config_provider(args: argparse.Namespace) -> None:
     root = root_path(args)
     ensure_root(root)
@@ -191,18 +236,11 @@ def cmd_llm_config_provider(args: argparse.Namespace) -> None:
         "base_url": args.base_url,
         "api_key_env": args.api_key_env,
         "model": args.model,
-        "temperature": args.temperature,
-        "max_tokens": args.max_tokens,
         "timeout": args.timeout,
     }
-    if args.top_p is not None:
-        cfg["top_p"] = args.top_p
-    if args.seed is not None:
-        cfg["seed"] = args.seed
-    if args.stop:
-        cfg["stop"] = args.stop
-    if args.json_mode != "off":
-        cfg["json_mode"] = args.json_mode
+    if args.adapter != "chat-completions":
+        cfg["adapter"] = args.adapter
+    _store_common_provider_options(cfg, args, max_tokens_key="max_tokens")
     data["profiles"][profile] = cfg
     if args.default or not data.get("default_profile"):
         data["default_profile"] = profile
@@ -741,6 +779,99 @@ def cmd_experiment(args: argparse.Namespace) -> None:
             )
         return
 
+    if args.experiment_cmd == "dialogue-nlp":
+        result = analyze_dialogue_semantics(
+            run_dir=Path(args.run_dir),
+            taxonomy_path=Path(args.taxonomy),
+            out_prefix=Path(args.out_prefix) if args.out_prefix else None,
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+        print(f"Wrote semantic NLP report: {result['output']['report_path']}")
+        print(f"Wrote semantic NLP data: {result['output']['json_path']}")
+        for contrast in result["contrasts"]:
+            print(
+                f"{contrast['id']}\tn={contrast['replicates']}\t"
+                f"frame_delta={contrast['frame_score_delta']:.3f}"
+            )
+        return
+
+    if args.experiment_cmd == "retrieval":
+        result = benchmark_dialogue_retrieval(
+            run_dir=Path(args.run_dir),
+            taxonomy_path=Path(args.taxonomy),
+            out_prefix=Path(args.out_prefix) if args.out_prefix else None,
+            distractor_limit=args.distractor_limit,
+            max_chars_per_doc=args.max_chars_per_doc,
+            query_sources=[
+                value.strip()
+                for value in args.query_sources.split(",")
+                if value.strip()
+            ],
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+        print(f"Wrote retrieval benchmark report: {result['output']['report_path']}")
+        print(f"Wrote retrieval benchmark data: {result['output']['json_path']}")
+        for summary in result["summaries"]:
+            print(
+                f"{summary['query_source']}/{summary['scope']}\tn={summary['cases']}\t"
+                f"r@1={summary['recall_at']['1']:.3f}\t"
+                f"r@2={summary['recall_at']['2']:.3f}\tmrr={summary['mrr']:.3f}"
+            )
+        return
+
+    if args.experiment_cmd == "dialogue":
+        conditions = resolve_dialogue_conditions(
+            args.conditions,
+            args.mirror_mixed,
+            preset=args.preset,
+        )
+        out_dir = (
+            Path(args.out_dir).expanduser()
+            if args.out_dir
+            else root / "runs" / make_run_id("dialogue-matrix")
+        )
+        result = run_dialogue_matrix(
+            root=root,
+            scenario_path=Path(args.scenario).expanduser(),
+            profile=args.profile,
+            llm_config=args.llm_config,
+            out_dir=out_dir,
+            conditions=conditions,
+            turns=args.turns,
+            replicates=args.replicates,
+            turn_output_tokens=args.turn_output_tokens,
+            max_steps=args.max_steps,
+            recent_n=args.recent,
+            max_tool_chars=args.max_tool_chars,
+            json_repair_steps=args.json_repair_steps,
+            policy=args.policy,
+            max_api_calls=args.max_api_calls,
+            max_suite_output_tokens=args.max_suite_output_tokens,
+            quiet=args.quiet,
+            history_chars=args.history_chars,
+            alternate_starter=args.alternate_starter,
+            rotate_condition_order=args.rotate_condition_order,
+            memory_fixture_path=(
+                Path(args.memory_fixture).expanduser() if args.memory_fixture else None
+            ),
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"Wrote dialogue matrix report: {result['report_path']}")
+            for session in result["sessions"]:
+                print(
+                    f"{session['session_id']}\tstatus={session['status']}\t"
+                    f"calls={session['model_calls']}\ttrace={session['trace_path']}"
+                )
+        if result["status"] != "ok":
+            raise SystemExit(1)
+        return
+
 def _input_line(prompt: str) -> str:
     try:
         return input(prompt)
@@ -1154,11 +1285,31 @@ def build_parser() -> argparse.ArgumentParser:
     sp2 = llm_sub.add_parser("show", help="Print LLM config.")
     sp2.set_defaults(func=cmd_llm_config_show)
 
+    sp2 = llm_sub.add_parser("openai", help="Configure an OpenAI API profile with automatic adapter selection.")
+    sp2.add_argument("--profile", default="openai-5.6-luna")
+    sp2.add_argument("--base-url", default="https://api.openai.com/v1", help="OpenAI API base URL or full /responses URL.")
+    sp2.add_argument("--api-key-env", default="OPENAI_API_KEY", help="Environment variable containing the API key.")
+    sp2.add_argument("--model", default="gpt-5.6-luna")
+    sp2.add_argument("--adapter", choices=["auto", "responses", "chat-completions"], default="auto")
+    sp2.add_argument("--temperature", type=float, default=None)
+    sp2.add_argument("--max-output-tokens", type=int, default=900)
+    sp2.add_argument("--top-p", type=float, default=None)
+    sp2.add_argument("--seed", type=int, default=None)
+    sp2.add_argument("--stop", action="append", default=[], help="Stop sequence. Repeat for multiple stops.")
+    sp2.add_argument("--json-mode", choices=["off", "json_object"], default="json_object")
+    sp2.add_argument("--reasoning-effort", choices=["", "none", "low", "medium", "high", "xhigh", "max"], default="medium")
+    sp2.add_argument("--reasoning-mode", choices=["", "pro"], default="")
+    sp2.add_argument("--reasoning-context", choices=["", "auto", "all_turns", "current_turn"], default="")
+    sp2.add_argument("--timeout", type=float, default=120)
+    sp2.add_argument("--default", action="store_true", help="Make this the default profile.")
+    sp2.set_defaults(func=cmd_llm_config_openai)
+
     sp2 = llm_sub.add_parser("provider", help="Configure an OpenAI-compatible provider API.")
     sp2.add_argument("--profile", default="provider")
     sp2.add_argument("--base-url", required=True, help="Base URL or full /chat/completions URL.")
     sp2.add_argument("--api-key-env", default="", help="Environment variable containing the API key.")
     sp2.add_argument("--model", required=True)
+    sp2.add_argument("--adapter", choices=["chat-completions", "responses", "auto"], default="chat-completions")
     sp2.add_argument("--temperature", type=float, default=0.2)
     sp2.add_argument("--max-tokens", type=int, default=900)
     sp2.add_argument("--top-p", type=float, default=None)
@@ -1264,6 +1415,122 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.add_argument("--max-tool-chars", type=int, default=6000, help="Maximum chars returned from each scratchpad action.")
     sp2.add_argument("--json-repair-steps", type=int, default=1, help="Retry invalid JSON runtime outputs up to N times.")
     sp2.add_argument("--quiet", action="store_true", help="Do not print tool action progress.")
+    sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")
+    sp2.set_defaults(func=cmd_experiment)
+
+    sp2 = experiment_sub.add_parser(
+        "retrieval",
+        help="Benchmark frozen dialogue-note retrieval without provider calls.",
+    )
+    sp2.add_argument("run_dir", help="Completed dialogue run directory containing suite_manifest.json.")
+    sp2.add_argument("--taxonomy", required=True, help="Frozen semantic taxonomy JSON path.")
+    sp2.add_argument(
+        "--out-prefix",
+        default=None,
+        help="Output prefix. Default: RUN_DIR/retrieval_benchmark",
+    )
+    sp2.add_argument(
+        "--distractor-limit",
+        type=int,
+        default=24,
+        help="Hard non-target notes added per stress case; 0 uses all available notes.",
+    )
+    sp2.add_argument(
+        "--max-chars-per-doc",
+        type=int,
+        default=700,
+        help="Compact top-hit injection ceiling used for overhead reporting.",
+    )
+    sp2.add_argument(
+        "--query-sources",
+        default="intervention,current-message",
+        help="Comma-separated query sources: intervention,current-message.",
+    )
+    sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")
+    sp2.set_defaults(func=cmd_experiment)
+
+    sp2 = experiment_sub.add_parser(
+        "dialogue-nlp",
+        help="Measure frozen dialogue and note semantics with auditable character n-gram NLP.",
+    )
+    sp2.add_argument("run_dir", help="Completed dialogue run directory containing suite_manifest.json.")
+    sp2.add_argument("--taxonomy", required=True, help="Frozen semantic taxonomy JSON path.")
+    sp2.add_argument(
+        "--out-prefix",
+        default=None,
+        help="Output prefix. Default: RUN_DIR/semantic_analysis",
+    )
+    sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")
+    sp2.set_defaults(func=cmd_experiment)
+
+    sp2 = experiment_sub.add_parser(
+        "dialogue",
+        help="Run a controlled raw/scratchpad model-to-model dialogue matrix.",
+    )
+    sp2.add_argument("scenario", help="JSON dialogue scenario path.")
+    sp2.add_argument("--profile", required=True, help="One LLM profile used by every speaker.")
+    sp2.add_argument("--llm-config", default=None, help="Path to llm.json. Default: ROOT/llm.json")
+    sp2.add_argument(
+        "--conditions",
+        default=None,
+        help="Comma-separated conditions. Defaults come from --preset; mixed conditions are mirrored.",
+    )
+    sp2.add_argument(
+        "--preset",
+        choices=("matrix", "ablation", "mechanism", "replay"),
+        default="matrix",
+        help="matrix compares raw/scratchpad pairings; ablation isolates centerline, write, and recall; mechanism compares live-written no recall, top-1/top-2, and full recall; replay applies one frozen note fixture across no recall, top-1/top-2, and full recall.",
+    )
+    sp2.add_argument(
+        "--memory-fixture",
+        default=None,
+        help="Validated frozen-note JSON fixture required by --preset replay.",
+    )
+    sp2.add_argument(
+        "--no-mirror-mixed",
+        dest="mirror_mixed",
+        action="store_false",
+        default=True,
+        help="Do not add the reversed scratchpad/raw mixed condition.",
+    )
+    sp2.add_argument("--turns", type=int, default=None, help="Utterances per session. Default: scenario value.")
+    sp2.add_argument("--replicates", type=int, default=1)
+    sp2.add_argument(
+        "--alternate-starter",
+        action="store_true",
+        help="On even replicates, let Speaker B receive the odd-turn interventions.",
+    )
+    sp2.add_argument(
+        "--rotate-condition-order",
+        action="store_true",
+        help="Rotate condition order by replicate so each condition occupies each position.",
+    )
+    sp2.add_argument(
+        "--history-chars",
+        type=int,
+        default=900,
+        help="Newest ordinary-dialogue characters retained per utterance.",
+    )
+    sp2.add_argument(
+        "--turn-output-tokens",
+        type=int,
+        default=720,
+        help="Shared generated-token allowance per utterance, pooled across internal calls.",
+    )
+    sp2.add_argument("--out-dir", default=None, help="Fresh directory for frozen dialogue artifacts.")
+    sp2.add_argument("--policy", choices=sorted(ACTION_POLICIES), default="writer")
+    sp2.add_argument("--max-steps", type=int, default=1, help="Scratchpad tool steps per utterance.")
+    sp2.add_argument("--recent", type=int, default=4, help="Recent scratchpad notes injected per utterance.")
+    sp2.add_argument("--max-tool-chars", type=int, default=6000)
+    sp2.add_argument("--json-repair-steps", type=int, default=1)
+    sp2.add_argument("--max-api-calls", type=int, default=80, help="Hard preflight cap on worst-case calls.")
+    sp2.add_argument(
+        "--max-suite-output-tokens",
+        type=int,
+        default=24000,
+        help="Hard preflight cap on accepted plus JSON-repair output tokens.",
+    )
+    sp2.add_argument("--quiet", action="store_true")
     sp2.add_argument("--json", action="store_true", help="Print detailed JSON result.")
     sp2.set_defaults(func=cmd_experiment)
 

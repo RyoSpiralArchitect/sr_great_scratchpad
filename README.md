@@ -106,6 +106,19 @@ sr:monday-meawness> audit
 
 LLMはannotationの「確定者」ではなく draft producer として使います。provider APIもlocal LLMも `llm.json` のprofileとして設定し、`annotate` またはREPLの `annotate` から呼び出します。実モデル向けの詳しいprofile例は [`docs/model-profiles.md`](docs/model-profiles.md) にあります。
 
+OpenAI GPT-5.6 / Responses API:
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config openai \
+  --profile openai-5.6-luna \
+  --model gpt-5.6-luna \
+  --reasoning-effort medium \
+  --json-mode json_object \
+  --default
+```
+
+`openai` profile は `adapter=auto` です。GPT-5.x / GPT-5.6 系は Responses API に向かい、既存の provider profile は従来通り Chat Completions 互換サーバーに向かいます。
+
 OpenAI-compatible provider API:
 
 ```bash
@@ -247,6 +260,97 @@ python3 -S sr_great_scratchpad.py experiment run scenarios/topic_drift.md \
   --out-dir runs/topic-drift
 ```
 
+Luna の raw API と scratchpad runtime を同じ議題・発話数・生成予算で比較する:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_centerline_dialogue.json \
+  --profile openai-5.6-luna \
+  --turns 8 \
+  --turn-output-tokens 720 \
+  --max-api-calls 80 \
+  --max-suite-output-tokens 24000
+```
+
+既定では `raw/raw`、`raw/scratchpad`、`scratchpad/raw`、`scratchpad/scratchpad` を走らせます。混合条件を左右反転するため、先攻・後攻の影響を scratchpad の効果と取り違えにくくなります。各発話の生成token枠は、scratchpad 内部の action/final 呼び出し全体で共有されます。入力tokenは memory/runtime のコストそのものなので揃えず、条件別に report へ記録します。
+
+各 scratchpad 話者は run 内の隔離領域を使い、書いた note を次の自分の発話から参照できます。`report.md`、sessionごとの `transcript.md` / `transcript.jsonl`、provider-visible promptを含む `trace.jsonl`、manifest、scratchpad note が同じ出力ディレクトリに保存されます。report は memory context 注入回数、複数JSONからの protocol recovery、parse error も分けて表示します。`add_note` と完全な final が同時に返った場合だけ、書き込み成功後に final を安全に再利用します。検索系actionの先書き final は採用しません。実行前には最悪 API call 数と suite 全体の生成token上限を検査します。
+
+centerline、書き込み、再読込の寄与を分ける遅延想起アブレーション:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset ablation \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 4 \
+  --alternate-starter \
+  --rotate-condition-order \
+  --turn-output-tokens 600 \
+  --max-api-calls 384 \
+  --max-suite-output-tokens 153600
+```
+
+`ablation` は `raw/raw`、`centerline-only`、`write-no-recall`、`scratchpad/scratchpad` の4条件です。`--rotate-condition-order` はreplicateごとに順序を巡回し、n=4では各条件を各実行位置へ一度ずつ置きます。全条件の通常会話履歴は最新側から同じ文字数だけ残します。`write-no-recall` は note を保存しますが、保存済みnoteの自動注入と全read actionを閉じるため、「書いたこと」自体と「後で読めたこと」を分離できます。600-token枠はvalidなaction/finalで共有し、invalid JSONは別の有界repair reserveへ計上します。literal probe は凍結turnでの語の出現だけを報告し、意味的な勝者判定には使いません。大きな反復を始める前に、`--replicates 1` と対応する低い上限で校正してください。
+
+遅延probeだけへ選択的にnoteを注入し、top-kとfull recallを分けるmechanism校正:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset mechanism \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 1 \
+  --turn-output-tokens 600 \
+  --max-api-calls 144 \
+  --max-suite-output-tokens 48000
+```
+
+`mechanism` は `write-no-recall`、`probe-top1`、`probe-top2`、`scratchpad/scratchpad` の4条件です。probe条件はmodelからのread actionを閉じたまま、scenarioで凍結したturnだけmoderator interventionをqueryに使い、compact化した上位1件または2件を直接注入します。traceにはquery、score、source path、元文字数、注入文字数が残ります。relation probeは単語の有無だけでなく、変更前・変更後の役割、順序、アナロジー限界を検査します。
+
+同じnoteを全条件に同じturnで投入し、可視性とtop-kだけを変えるfrozen-note replay:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset replay \
+  --memory-fixture scenarios/luna_delayed_recall_frozen_notes.json \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 1 \
+  --turn-output-tokens 600 \
+  --max-api-calls 144 \
+  --max-suite-output-tokens 48000
+```
+
+`replay` は `replay-no-recall`、`replay-top1`、`replay-top2`、`replay-full` の4条件です。modelからの全scratchpad actionを閉じ、fixtureの4noteを完了turnの後に決めた話者へ投入します。payload hash、donor note hash、条件間のnote byte identityはpreflightとsuite完了時に検証され、fixture writeとmodel writeは別々に記録されます。
+
+既存runのretrievalをprovider callなしで再生し、own-threadとhard-distractor stressを分けて測る:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment retrieval \
+  .great_scratchpad/runs/YOUR_DIALOGUE_RUN \
+  --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json \
+  --distractor-limit 24
+```
+
+reportは `intervention` とfull `current-message` queryを別々に、Recall@1/2/3/5、MRR、候補数、compact注入文字数とともに出します。n=8へのpost-hoc適用、Luna n=1 mechanism校正、frozen-note replayの実行結果は [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) にあります。replayは16/16 noteのbyte identityとtop-2/fullのsource可視性を確認しましたが、strict relationは全4条件で0/1でした。n=4の前に、訂正をold state、new state、comparison boundaryとして明示するrelation-preserving note表現を校正する境界です。
+
+凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue-nlp \
+  .great_scratchpad/runs/YOUR_DIALOGUE_RUN \
+  --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json
+```
+
+生成scenarioと評価taxonomyは別identityとしてSHA-256を記録します。reportは意味フレーム占有率、note内容、反復類似度、noteのprovider-visible promptへの包含、note→遅延応答類似度、paired treatment差、固定seed bootstrap区間、literalとrelationの対応表を分けて出力します。これは監査可能な語彙・意味測定であり、LLM judgeや真偽判定ではありません。反復拡張の事前計画は [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md)、n=4実行結果は [`docs/luna-delayed-recall-n4.md`](docs/luna-delayed-recall-n4.md) にあります。
+
 ### Live run
 
 挙動を見ながら育てるための小さな実行例を用意しています。
@@ -366,6 +470,19 @@ The plan is to learn the interaction before freezing the product surface: observ
 ### LLM Connection
 
 The LLM is treated as a draft producer, not as an authority. Provider APIs and local LLM commands are both configured as profiles in `llm.json`, then used by `annotate` or the REPL `annotate` command. See [`docs/model-profiles.md`](docs/model-profiles.md) for richer real-model profile examples.
+
+OpenAI GPT-5.6 / Responses API:
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config openai \
+  --profile openai-5.6-luna \
+  --model gpt-5.6-luna \
+  --reasoning-effort medium \
+  --json-mode json_object \
+  --default
+```
+
+`openai` profiles use `adapter=auto`: GPT-5.x / GPT-5.6 models route through the Responses API, while legacy-compatible provider profiles continue using Chat Completions.
 
 OpenAI-compatible provider API:
 
@@ -496,6 +613,95 @@ python3 -S sr_great_scratchpad.py experiment run scenarios/topic_drift.md \
   --queue-writes \
   --out-dir runs/topic-drift
 ```
+
+Compare raw Luna with the scratchpad runtime under a shared topic, utterance count, and generation allowance:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_centerline_dialogue.json \
+  --profile openai-5.6-luna \
+  --turns 8 \
+  --turn-output-tokens 720 \
+  --max-api-calls 80 \
+  --max-suite-output-tokens 24000
+```
+
+The default matrix runs `raw/raw`, both orientations of `raw/scratchpad`, and `scratchpad/scratchpad`. Every utterance receives the same generated-token allowance; scratchpad action and final calls share that allowance. Input tokens are reported rather than equalized because runtime and memory overhead are part of the treatment cost. Scratchpad speakers use isolated per-run workspaces whose notes become available on their later turns. The runner freezes transcripts, provider-visible prompts, traces, manifests, usage, tool activity, memory-context injections, multi-object protocol recoveries, parse errors, and deterministic literal-anchor coverage, while leaving the quality judgment to transcript review. A complete trailing final is reused only after a successful `add_note`; search-like actions always wait for their observation.
+
+Run the delayed-recall ablation to separate deterministic navigation, memory writing, and memory recall:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset ablation \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 4 \
+  --alternate-starter \
+  --rotate-condition-order \
+  --turn-output-tokens 600 \
+  --max-api-calls 384 \
+  --max-suite-output-tokens 153600
+```
+
+The ablation conditions are `raw/raw`, `centerline-only`, `write-no-recall`, and `scratchpad/scratchpad`. `--rotate-condition-order` cycles the order by replicate, placing every condition in every execution position once at n=4. Every condition receives the same newest-first ordinary-dialogue window. Write-no-recall persists notes but disables automatic note injection and all read actions, separating the act of writing from later availability. The 600-token allowance is pooled across valid actions and finals; invalid JSON is charged to a separate bounded repair reserve. Frozen-turn literal probes report exact lexical evidence only; they do not declare a semantic winner. Calibrate with one replicate and proportionally lower caps before a larger run.
+
+Calibrate selective recall at the delayed probe while separating top-k from full recall:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset mechanism \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 1 \
+  --turn-output-tokens 600 \
+  --max-api-calls 144 \
+  --max-suite-output-tokens 48000
+```
+
+The `mechanism` preset runs `write-no-recall`, `probe-top1`, `probe-top2`, and `scratchpad/scratchpad`. Probe conditions keep model-requested read actions blocked and use only the frozen moderator intervention to retrieve one or two compact notes at selected turns. Traces retain the query, score, source path, source characters, and injected characters. Relation probes require the old and new levels to occupy the requested before/after roles, in order, with an explicit analogy boundary.
+
+Hold note content and timing constant while varying only visibility and top-k:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset replay \
+  --memory-fixture scenarios/luna_delayed_recall_frozen_notes.json \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 1 \
+  --turn-output-tokens 600 \
+  --max-api-calls 144 \
+  --max-suite-output-tokens 48000
+```
+
+The `replay` preset runs `replay-no-recall`, `replay-top1`, `replay-top2`, and `replay-full`. It blocks every model-requested scratchpad action and applies the four tracked fixture notes to the current speaker after fixed completed turns. Preflight and suite-final gates validate payload hashes, donor note hashes, and byte identity across conditions. Fixture writes and model writes remain separate in traces and manifests.
+
+Replay retrieval over a frozen run without provider calls:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment retrieval \
+  .great_scratchpad/runs/YOUR_DIALOGUE_RUN \
+  --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json \
+  --distractor-limit 24
+```
+
+The report separates intervention-only and full-current-message queries, own-thread and hard-distractor scopes, Recall@1/2/3/5, MRR, candidate counts, and compact injection characters. See [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) for the post-hoc n=8 analysis, Luna n=1 mechanism calibration, and frozen-note replay result. Replay verified byte identity for all 16 applied notes and source visibility under top-2/full, but every condition scored 0/1 on the strict relation probe. The next boundary before n=4 is a relation-preserving note representation with explicit old state, new state, and comparison boundary roles.
+
+Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue-nlp \
+  .great_scratchpad/runs/YOUR_DIALOGUE_RUN \
+  --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json
+```
+
+Generation scenarios and assessment taxonomies retain separate SHA-256 identities. The report separates semantic-frame occupancy, note contents, repetition similarity, provider-visible note containment, note-to-delayed-response similarity, paired treatment contrasts, a fixed-seed bootstrap interval, and paired literal and relation outcomes. This is an auditable lexical-semantic measure, not an LLM judge or factuality scorer. See [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md) for the preregistered replication path, [`docs/luna-delayed-recall-n4.md`](docs/luna-delayed-recall-n4.md) for the Stage 1 pilot, and [`docs/luna-delayed-recall-n8.md`](docs/luna-delayed-recall-n8.md) for the independent confirmation.
 
 ### Live Run
 
