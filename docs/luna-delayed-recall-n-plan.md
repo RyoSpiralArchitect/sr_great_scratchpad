@@ -126,3 +126,38 @@ were positive, so the frozen Stage 2 rule advances to an independent n=8
 confirmation. Two earlier failed cohorts remain preserved as protocol evidence
 and are not included in the behavioral estimate. See
 [`docs/luna-delayed-recall-n4.md`](luna-delayed-recall-n4.md).
+
+## Stage 2 execution record
+
+The independent n=8 confirmation completed on 2026-08-26. All validity checks
+passed, all eight paired semantic deltas were positive, and the fixed-seed 95%
+bootstrap interval excluded zero. Full recall recovered 13/16 literal items
+versus 1/16 for write-no-recall. The n=4 pilot was not pooled into the primary
+estimate. See [`docs/luna-delayed-recall-n8.md`](luna-delayed-recall-n8.md).
+
+## Stage 3 generalization plan
+
+The exact Luna/topic cell has reached its planned stop boundary. Do not expand
+it directly to n=16. The next campaign should factorize topic and backend
+generalization:
+
+1. Freeze at least two new topic families. One should require preserving an
+   uncertainty or evidence boundary; one should require restoring a corrected
+   center while retaining a competing branch.
+2. Give every topic an independent generation scenario, literal probes, and
+   assessment taxonomy. Calibrate lexical coverage without editing a taxonomy
+   after a cohort starts.
+3. Cross the topics with at least one API profile and one local Hugging Face
+   profile. Keep generation parameters, history window, condition order, and
+   starter balance frozen within each model-topic cell.
+4. Run n=1 plumbing calibration, then n=4 paired screening. Advance a cell to a
+   fresh n=8 cohort when at least three of four valid deltas are positive; keep
+   stopped or invalid cohorts append-only and out of behavioral estimates.
+5. Preflight a shared campaign call and token ceiling before any provider call.
+   Report within-cell paired deltas, literal discordance, protocol cost, and
+   visibility checks. Do not compare absolute TF-IDF scores across taxonomies.
+
+The broader claim advances only after valid positive evidence appears across
+multiple topic families and both backend classes. Hidden-state or residual
+analysis for a local model is a separate mechanistic layer and must not replace
+the behavioral manipulation checks.

@@ -609,7 +609,7 @@ python3 -S sr_great_scratchpad.py experiment dialogue-nlp \
   --taxonomy scenarios/luna_delayed_recall_semantic_taxonomy.json
 ```
 
-Generation scenarios and assessment taxonomies retain separate SHA-256 identities. The report separates semantic-frame occupancy, note contents, repetition similarity, provider-visible note containment, note-to-delayed-response similarity, paired treatment contrasts, a fixed-seed bootstrap interval, and paired literal outcomes. This is an auditable lexical-semantic measure, not an LLM judge or factuality scorer. See [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md) for the preregistered replication path and [`docs/luna-delayed-recall-n4.md`](docs/luna-delayed-recall-n4.md) for the Stage 1 result.
+Generation scenarios and assessment taxonomies retain separate SHA-256 identities. The report separates semantic-frame occupancy, note contents, repetition similarity, provider-visible note containment, note-to-delayed-response similarity, paired treatment contrasts, a fixed-seed bootstrap interval, and paired literal outcomes. This is an auditable lexical-semantic measure, not an LLM judge or factuality scorer. See [`docs/luna-delayed-recall-n-plan.md`](docs/luna-delayed-recall-n-plan.md) for the preregistered replication path, [`docs/luna-delayed-recall-n4.md`](docs/luna-delayed-recall-n4.md) for the Stage 1 pilot, and [`docs/luna-delayed-recall-n8.md`](docs/luna-delayed-recall-n8.md) for the independent confirmation.
 
 ### Live Run
 
