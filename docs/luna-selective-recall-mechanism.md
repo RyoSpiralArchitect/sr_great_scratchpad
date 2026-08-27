@@ -183,3 +183,73 @@ identity, exactly one selective injection in each top-k condition, and source
 visibility matching the requested cutoff. This n=1 run remains a manipulation
 and endpoint calibration. Only after it passes should a balanced n=4 estimate
 be considered.
+
+## Frozen replay calibration 1 execution record
+
+The one-replicate Luna frozen-note replay completed on 2026-08-26. The run
+passed its fixture and visibility manipulation checks. It did not pass the
+strict relation endpoint, so it remains a representation diagnosis rather than
+an efficacy estimate.
+
+- source commit: `22603c9324877732c240ada82996baa6e4fa7c27`
+- run id: `dialogue-2026-08-26T232812-0700-f0ef1ab0`
+- scenario SHA-256: `97b923b484abb6ff991c7957e141e34206aa5b5ddc28c3ccabaeefbaf37354dc`
+- fixture SHA-256: `c5c72e87815b843d5619aa2e25c2fe1908011c0a1f85227adb0c510b697b125f`
+- dialogue runner SHA-256: `09c01428ce3019ea90504daca35ed4b0741f8a5c4dfa56479100468c417b36df`
+- taxonomy SHA-256: `6aa560fb890f2c7ca5ec9f45760a89a241e5a0c7e85216b93f568c1d3d722f23`
+- model/profile: `gpt-5.6-luna` / `openai-5.6-luna`
+- completion: 4/4 sessions and 48/48 utterances
+- wall time: 2 minutes 25 seconds
+
+All 16 applied notes matched their four donor hashes, and each fixture entry
+was byte-identical across the four conditions. Every condition had four fixture
+writes, zero model writes, zero tool steps, zero protocol recoveries, and zero
+JSON parse errors. Top-1 and top-2 each injected memory only at turn 11.
+
+| Condition | Probe memory | Source visible | Frame score | Literal | Relation | Prompt tokens | Completion tokens | Calls | Full/retrieval ctx |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| replay-no-recall | none | no | 0.027520 | 1/2 | 0/1 | 16,751 | 1,391 | 12 | 0 |
+| replay-top1 | rank-1 distractor | no | 0.055040 | 1/2 | 0/1 | 16,924 | 1,421 | 12 | 1 |
+| replay-top2 | distractor + source | yes | 0.218899 | 1/2 | 0/1 | 16,971 | 1,327 | 12 | 1 |
+| replay-full | three recent notes | yes | 0.260070 | 1/2 | 0/1 | 20,659 | 1,490 | 12 | 8 |
+
+Under the frozen moderator-intervention query, the exact turn-3 source note was
+rank 2 in every condition. Top-1 injected only `turns/000002-note.md` (199
+compact payload characters; 297 with the wrapper). Top-2 added source
+`turns/000001-note.md` (413 payload characters total; 558 with the wrapper).
+Full recall exposed all three complete notes at turn 11 (1,707 characters).
+The offline own-thread replay therefore reports R@1 `0/4`, R@2 `4/4`, and MRR
+`0.5`. The full-current-message query moved the source to rank 3, and the
+cross-thread stress scope remained unsupported.
+
+Relative to no recall, the descriptive frame-score deltas were `+0.028` for
+top-1, `+0.191` for top-2, and `+0.233` for full recall. Top-2 exceeded top-1
+by `+0.164`; full exceeded top-2 by `+0.041`. These are single-replicate lexical
+frame measurements. Literal completion remained `1/2` and strict relation
+completion remained `0/1` in every condition, so they do not establish a
+behavioral winner.
+
+The source became fully provider-visible in top-2 and full
+(`note_prompt_containment=1.0`), yet neither response explicitly assigned the
+species level to the old state. The frozen note says not to confuse species
+difference with within-individual heterogeneity, but it does not encode the
+correction as explicit old-state, new-state, and boundary roles. This points to
+a note-representation bottleneck after retrieval succeeds.
+
+The suite used 48 model calls, 71,305 prompt tokens, 5,629 completion tokens,
+and 76,934 total tokens. Semantic and retrieval JSON/Markdown outputs reproduced
+byte-identically; their hashes are:
+
+- semantic JSON: `1fc201cf41c17f4737bdf67e851f59af0dd51f9dc80c52afa2161667b28cc44f`
+- semantic Markdown: `ac9cf307ab7be0174f5c95244db31eb003abdd9fa10eea20d15243ca3cd4f38f`
+- retrieval JSON: `5fc1f325a0ec2b82b75c986080237e65ef36852c393ce69ef384f8ac23a484f3`
+- retrieval Markdown: `c99b9d4678ec92c0fbd2ea1465b5779f130e87e7d12740f01b7d8e9098ae849c`
+
+## Revised next boundary
+
+Do not advance this representation directly to n=4. First freeze a second
+relation-preserving fixture or rendering that names `before_state`,
+`after_state`, and `comparison_boundary` explicitly, while retaining the
+current free-form fixture as a control. Calibrate that representation at n=1
+with the same no-recall/top-1/top-2/full visibility matrix. Only then consider
+a balanced replication for an efficacy estimate.

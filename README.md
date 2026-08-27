@@ -339,7 +339,7 @@ python3 -S sr_great_scratchpad.py experiment retrieval \
   --distractor-limit 24
 ```
 
-reportは `intervention` とfull `current-message` queryを別々に、Recall@1/2/3/5、MRR、候補数、compact注入文字数とともに出します。n=8へのpost-hoc適用、Luna n=1 mechanism校正、frozen-note replay protocolは [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) にあります。条件ごとのnote内容が異なる問題を、tracked fixtureとbyte-identity gateで切り離しています。
+reportは `intervention` とfull `current-message` queryを別々に、Recall@1/2/3/5、MRR、候補数、compact注入文字数とともに出します。n=8へのpost-hoc適用、Luna n=1 mechanism校正、frozen-note replayの実行結果は [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) にあります。replayは16/16 noteのbyte identityとtop-2/fullのsource可視性を確認しましたが、strict relationは全4条件で0/1でした。n=4の前に、訂正をold state、new state、comparison boundaryとして明示するrelation-preserving note表現を校正する境界です。
 
 凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
 
@@ -691,7 +691,7 @@ python3 -S sr_great_scratchpad.py experiment retrieval \
   --distractor-limit 24
 ```
 
-The report separates intervention-only and full-current-message queries, own-thread and hard-distractor scopes, Recall@1/2/3/5, MRR, candidate counts, and compact injection characters. See [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) for the post-hoc n=8 analysis, Luna n=1 mechanism calibration, and frozen-note replay protocol. The tracked fixture plus byte-identity gate removes independently generated note contents from the next visibility/cutoff comparison.
+The report separates intervention-only and full-current-message queries, own-thread and hard-distractor scopes, Recall@1/2/3/5, MRR, candidate counts, and compact injection characters. See [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) for the post-hoc n=8 analysis, Luna n=1 mechanism calibration, and frozen-note replay result. Replay verified byte identity for all 16 applied notes and source visibility under top-2/full, but every condition scored 0/1 on the strict relation probe. The next boundary before n=4 is a relation-preserving note representation with explicit old state, new state, and comparison boundary roles.
 
 Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
 
