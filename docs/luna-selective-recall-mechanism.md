@@ -99,3 +99,48 @@ tokens against both no-recall and full-recall controls.
 The notes are still generated independently by condition. Treat note-content
 matching as a manipulation check and do not claim a pure retrieval-cutoff effect
 until a later frozen-note replay design removes that remaining variance.
+
+## Calibration 1 execution record
+
+The one-replicate Luna calibration completed on 2026-08-26. It is a plumbing
+and endpoint calibration, not an efficacy estimate.
+
+- source commit: `8d9731d0bec952e7da0de5c29a5126fa0a144d53`
+- run id: `dialogue-2026-08-26T190007-0700-f5f7dc7a`
+- scenario SHA-256: `97b923b484abb6ff991c7957e141e34206aa5b5ddc28c3ccabaeefbaf37354dc`
+- dialogue runner SHA-256: `becbaf05de6023034404e99cfcad4f830880261f0ef415ae45277dcb911fa4ed`
+- taxonomy SHA-256: `1115cf35073eb922f8487a58ccd24fffc3d896671ba52c944badcf705ceaa738`
+- model/profile: `gpt-5.6-luna` / `openai-5.6-luna`
+- completion: 4/4 sessions and 48/48 utterances
+- wall time: 2 minutes 50 seconds
+
+| Condition | Source rank | Source visible | Frame score | Literal | Relation | Prompt tokens | Completion tokens | Calls | Writes | Context injections |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| write-no-recall | 2 | no | 0.023061 | 0/2 | 0/1 | 16,614 | 2,114 | 12 | 4 | 0 |
+| probe-top1 | 2 | no | 0.122652 | 1/2 | 0/1 | 17,901 | 2,314 | 13 | 4 | 1 |
+| probe-top2 | 1 | yes | 0.248837 | 2/2 | 1/1 | 18,254 | 2,220 | 13 | 4 | 1 |
+| scratchpad-scratchpad | 1 | yes | 0.215433 | 1/2 | 0/1 | 18,777 | 2,064 | 12 | 3 | 4 |
+
+Both probe conditions had exactly one injection at turn 11, zero injections at
+other turns, and zero model-requested read actions. Top-1 injected only
+`turns/000003-note.md` (229 compact payload characters), while the frozen
+source was `turns/000001-note.md` at rank 2. Top-2 injected the source at rank 1
+plus one distractor (429 compact payload characters; 574 characters including
+the retrieval wrapper).
+
+Relative to no recall, the descriptive turn-11 frame-score deltas were `+0.100`
+for top-1, `+0.226` for top-2, and `+0.192` for full recall. Top-2 exceeded full
+recall by `+0.033` in this single replicate. These values select no winner at
+n=1, especially because every condition generated a different note set.
+
+The suite used 50 model calls, 71,546 prompt tokens, 8,712 completion tokens,
+13 bounded protocol recoveries, and zero JSON parse errors. Semantic and
+retrieval JSON/Markdown outputs reproduced byte-identically.
+
+## Revised next boundary
+
+Do not advance this independently written-note design directly to n=4. First
+freeze one note fixture with source-turn and distractor notes, replay that exact
+fixture across no-recall, top-1, top-2, and full-recall conditions, and keep
+generation order plus starter balanced. The next experiment should estimate
+retrieval availability and cutoff with note contents held constant.

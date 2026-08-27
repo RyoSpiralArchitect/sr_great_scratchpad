@@ -321,7 +321,7 @@ python3 -S sr_great_scratchpad.py experiment retrieval \
   --distractor-limit 24
 ```
 
-reportは `intervention` とfull `current-message` queryを別々に、Recall@1/2/3/5、MRR、候補数、compact注入文字数とともに出します。n=8へのpost-hoc適用と次回校正の境界は [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) にあります。
+reportは `intervention` とfull `current-message` queryを別々に、Recall@1/2/3/5、MRR、候補数、compact注入文字数とともに出します。n=8へのpost-hoc適用とLuna n=1 mechanism校正の結果は [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) にあります。校正ではtop1のsourceがrank 2、top2ではrank 1となり、top2だけがliteral 2/2とrelation 1/1を同時に通過しました。条件ごとのnote内容が異なるため、n=4へ進む前にfrozen-note replayで固定する境界です。
 
 凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
 
@@ -655,7 +655,7 @@ python3 -S sr_great_scratchpad.py experiment retrieval \
   --distractor-limit 24
 ```
 
-The report separates intervention-only and full-current-message queries, own-thread and hard-distractor scopes, Recall@1/2/3/5, MRR, candidate counts, and compact injection characters. See [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) for the post-hoc n=8 result and the next calibration boundary.
+The report separates intervention-only and full-current-message queries, own-thread and hard-distractor scopes, Recall@1/2/3/5, MRR, candidate counts, and compact injection characters. See [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) for the post-hoc n=8 analysis and Luna n=1 mechanism calibration. The calibration ranked the source second under top-1 and first under top-2; only top-2 passed both literal 2/2 and relation 1/1. Because note contents differed by condition, the next boundary is frozen-note replay before n=4.
 
 Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
 
