@@ -1,0 +1,96 @@
+{
+  "entries": [
+    {
+      "after_turn": 3,
+      "created_at": "2026-08-26T19:00:15-07:00",
+      "id": "turn-03-level-correction",
+      "payload": {
+        "anchors": "種間差ではなく個体内の異質性",
+        "assumptions": "局所単位の自律性は比較可能",
+        "center": "distributed systems / analogy fit",
+        "drift_risks": "クラゲの種多様性へ話を広げない",
+        "open_questions": "名古屋食文化を独立論点として検討",
+        "text": "比較単位はクラゲ個体内の神経細胞型・役割・局所回路の異質性。味噌は地域的な選択と継承。",
+        "trajectory": "生物学的分散と文化的分散の対応範囲を整理"
+      },
+      "payload_sha256": "80bfeeda8f6ba175ce5a472d3c74a191354067103d25e72d3a066f2f56bd48dc",
+      "source_note_number": 1,
+      "source_note_sha256": "3731aa12bb94f4acfc56c6ec1077a92d1c6cbca8dfeddd48031160c8cc7f3956",
+      "source_speaker": "A",
+      "speaker_binding": "turn-speaker"
+    },
+    {
+      "after_turn": 4,
+      "created_at": "2026-08-26T19:00:19-07:00",
+      "id": "turn-04-level-correction-echo",
+      "payload": {
+        "anchors": "機能分散と文化的多様性は別尺度",
+        "assumptions": "比喩は構造的類似に限定",
+        "center": "分散系の比較",
+        "drift_risks": "種間多様性へ戻さない",
+        "open_questions": "名古屋食文化を独立論点として検討",
+        "text": "比較単位をクラゲ個体内の神経細胞型・局所回路の異質性に固定。味噌との対応は全体を支える異質な単位に限定。",
+        "trajectory": "種間差ではなく個体内構造へ補正"
+      },
+      "payload_sha256": "503869d78836c1d8c778f88a2481e1c15bb1d1eac73a9710b248d55dcd1e23d6",
+      "source_note_number": 1,
+      "source_note_sha256": "1a0fee7579cb1293d3ca4cec5357344b5a17b956f785f150670ff224a04a2e4f",
+      "source_speaker": "B",
+      "speaker_binding": "turn-speaker"
+    },
+    {
+      "after_turn": 5,
+      "created_at": "2026-08-26T19:00:22-07:00",
+      "id": "turn-05-nagoya-branch",
+      "payload": {
+        "anchors": "あんかけパスタの素材・技法と料理様式を区別",
+        "assumptions": "元の比較とは別の問い",
+        "center": "名古屋食文化の成立",
+        "drift_risks": "由来と成立地の混同",
+        "open_questions": "名古屋発祥と言える範囲",
+        "text": "比較の中心を、クラゲ個体内の局所的異質性から名古屋食文化の成立へ移す。あんかけパスタは由来と成立地を分ける。",
+        "trajectory": "生物学的分散との比較を限定し、独立論点へ移行"
+      },
+      "payload_sha256": "ec26a03ee077ccd58fec005e8eb1deb5e1914ba473218abdbbf1079953166871",
+      "source_note_number": 2,
+      "source_note_sha256": "41af23d63bcbb12d1b20085d04eb2faba8be86412b6235f1d45b5c5f99de0331",
+      "source_speaker": "A",
+      "speaker_binding": "turn-speaker"
+    },
+    {
+      "after_turn": 9,
+      "created_at": "2026-08-26T19:00:34-07:00",
+      "id": "turn-09-centers-separated",
+      "payload": {
+        "anchors": "起源と地域的成立を区別",
+        "assumptions": "比較は構造の範囲に限定",
+        "center": "分散比較／名古屋料理成立",
+        "drift_risks": "三論点の混同",
+        "open_questions": "次に分散比較へ戻るか",
+        "text": "中心を分離：クラゲと味噌は分散構造の比較、あんかけパスタは外来要素の地域的再結合による成立。",
+        "trajectory": "生物・文化・料理の論点を分けて進行"
+      },
+      "payload_sha256": "234e0e1b55cae31c9f1ddab642b17b45091401cbd1f717f4a155c4c7f9ee5fa6",
+      "source_note_number": 3,
+      "source_note_sha256": "980af124a44e24d92efbcc63358deea28009a75cc6b56bd5ea8a2a09f5797f9e",
+      "source_speaker": "A",
+      "speaker_binding": "turn-speaker"
+    }
+  ],
+  "id": "luna-delayed-recall-write-no-recall-cal1",
+  "schema_version": 1,
+  "source": {
+    "condition": "write-no-recall",
+    "dialogue_runner_sha256": "becbaf05de6023034404e99cfcad4f830880261f0ef415ae45277dcb911fa4ed",
+    "git_commit": "8d9731d0bec952e7da0de5c29a5126fa0a144d53",
+    "model": "gpt-5.6-luna",
+    "profile": "openai-5.6-luna",
+    "run_id": "dialogue-2026-08-26T190007-0700-f5f7dc7a",
+    "scenario_path": "scenarios/luna_delayed_recall_ablation.json",
+    "scenario_sha256": "97b923b484abb6ff991c7957e141e34206aa5b5ddc28c3ccabaeefbaf37354dc",
+    "session_id": "write-no-recall-r01",
+    "trace_path": ".great_scratchpad/runs/luna-selective-recall-cal1/write-no-recall-r01/trace.jsonl",
+    "trace_sha256": "a95919e26a5ad2a5764dad2e9101529a0f832fb22a9fda96388efb92a4b74717"
+  },
+  "title": "Luna delayed-recall frozen notes from write-no-recall calibration 1"
+}

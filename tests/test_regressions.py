@@ -1873,6 +1873,154 @@ class GreatScratchpadRegressionTests(unittest.TestCase):
             self.assertEqual(thread_summary["recall_at"]["2"], 1.0)
             self.assertEqual(thread_summary["mrr"], 1.0)
 
+    def test_dialogue_frozen_replay_holds_note_bytes_constant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "scratchpad"
+            out_dir = Path(tmp) / "replay"
+            parser = gs.build_parser()
+            fake_model = Path("scripts/fake_ablation_dialogue_llm.py").resolve()
+            scenario = Path("scenarios/luna_delayed_recall_ablation.json").resolve()
+            fixture = Path("scenarios/luna_delayed_recall_frozen_notes.json").resolve()
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "llm-config",
+                    "local",
+                    "--profile",
+                    "fake-replay",
+                    "--command",
+                    f"{sys.executable} -S {fake_model}",
+                    "--default",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                args.func(args)
+
+            args = parser.parse_args(
+                [
+                    "--root",
+                    str(root),
+                    "experiment",
+                    "dialogue",
+                    str(scenario),
+                    "--profile",
+                    "fake-replay",
+                    "--preset",
+                    "replay",
+                    "--memory-fixture",
+                    str(fixture),
+                    "--turns",
+                    "12",
+                    "--history-chars",
+                    "500",
+                    "--turn-output-tokens",
+                    "200",
+                    "--max-api-calls",
+                    "144",
+                    "--max-suite-output-tokens",
+                    "17000",
+                    "--out-dir",
+                    str(out_dir),
+                    "--quiet",
+                    "--json",
+                ]
+            )
+            out = io.StringIO()
+            with redirect_stdout(out):
+                args.func(args)
+            result = json.loads(out.getvalue())
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(
+                [session["condition"] for session in result["sessions"]],
+                [
+                    "replay-no-recall",
+                    "replay-top1",
+                    "replay-top2",
+                    "replay-full",
+                ],
+            )
+            self.assertTrue(result["frozen_note_replay"]["verified"])
+            self.assertTrue(result["frozen_note_replay"]["note_bytes_identical"])
+            sessions = {session["condition"]: session for session in result["sessions"]}
+            for session in sessions.values():
+                self.assertEqual(session["memory_writes"], 0)
+                self.assertEqual(session["fixture_memory_writes"], 4)
+                self.assertEqual(len(session["fixture_notes"]), 4)
+                self.assertEqual(session["model_memory_policy"], "read-only")
+
+            self.assertEqual(sessions["replay-no-recall"]["memory_context_injections"], 0)
+            self.assertEqual(sessions["replay-top1"]["retrieval_context_injections"], 1)
+            self.assertEqual(sessions["replay-top1"]["retrieval_context_sources"], 1)
+            self.assertEqual(sessions["replay-top2"]["retrieval_context_injections"], 1)
+            self.assertEqual(sessions["replay-top2"]["retrieval_context_sources"], 2)
+            self.assertGreater(sessions["replay-full"]["memory_context_injections"], 1)
+
+            top1_events = gs.load_trace_events(Path(sessions["replay-top1"]["trace_path"]))
+            fixture_events = [
+                event for event in top1_events if event["event"] == "fixture_note_applied"
+            ]
+            self.assertEqual(len(fixture_events), 4)
+            self.assertTrue(
+                all(event["note_sha256"] == event["expected_note_sha256"] for event in fixture_events)
+            )
+            starts = [event for event in top1_events if event["event"] == "turn_start"]
+            self.assertTrue(all(event["allowed_actions"] == [] for event in starts))
+            top1_probe = next(event for event in starts if event["dialogue_turn"] == 11)
+            top1_path = top1_probe["retrieval_sources"][0]["path"]
+            self.assertNotEqual(top1_path, "turns/000001-note.md")
+
+            top2_events = gs.load_trace_events(Path(sessions["replay-top2"]["trace_path"]))
+            top2_probe = next(
+                event
+                for event in top2_events
+                if event["event"] == "turn_start" and event["dialogue_turn"] == 11
+            )
+            top2_paths = [source["path"] for source in top2_probe["retrieval_sources"]]
+            self.assertEqual(top2_paths[0], top1_path)
+            self.assertIn("turns/000001-note.md", top2_paths)
+
+            taxonomy = Path("scenarios/luna_delayed_recall_semantic_taxonomy.json")
+            semantic = gs.analyze_dialogue_semantics(
+                run_dir=out_dir,
+                taxonomy_path=taxonomy,
+                out_prefix=Path(tmp) / "semantic" / "replay",
+            )
+            self.assertEqual(semantic["corpus"]["notes"], 16)
+            self.assertEqual(
+                semantic["generation_identity"]["memory_fixture_sha256"],
+                result["memory_fixture_sha256"],
+            )
+            targets = {
+                item["condition"]: item
+                for item in semantic["targets"]
+                if item["target_id"] == "delayed-correction-turn-11"
+            }
+            self.assertFalse(targets["replay-no-recall"]["note_visible"])
+            self.assertFalse(targets["replay-top1"]["note_visible"])
+            self.assertTrue(targets["replay-top2"]["note_visible"])
+            self.assertTrue(targets["replay-full"]["note_visible"])
+
+            benchmark = gs.benchmark_dialogue_retrieval(
+                run_dir=out_dir,
+                taxonomy_path=taxonomy,
+                out_prefix=Path(tmp) / "retrieval" / "replay",
+            )
+            self.assertEqual(benchmark["eligible_targets"], 4)
+            self.assertTrue(
+                benchmark["generation_identity"]["frozen_note_replay"]["verified"]
+            )
+            thread_summary = next(
+                item
+                for item in benchmark["summaries"]
+                if item["query_source"] == "intervention"
+                and item["scope"] == "thread"
+            )
+            self.assertEqual(thread_summary["recall_at"]["1"], 0.0)
+            self.assertEqual(thread_summary["recall_at"]["2"], 1.0)
+            self.assertEqual(thread_summary["mrr"], 0.5)
+
     def test_dialogue_counterbalances_starter_and_condition_order(self) -> None:
         plan = gs.dialogue_budget_plan(
             ["raw-scratchpad"],

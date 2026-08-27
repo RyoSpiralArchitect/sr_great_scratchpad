@@ -39,7 +39,8 @@ def main() -> None:
 
     correction_turn = "重要な補正を置く" in current
     already_observed = "Action 1: scratchpad.add_note" in prompt
-    if correction_turn and not already_observed:
+    fixture_replay = "Frozen memory notes are supplied by the runtime" in prompt
+    if correction_turn and not already_observed and not fixture_replay:
         print(
             json.dumps(
                 {
@@ -59,7 +60,7 @@ def main() -> None:
         return
 
     if delayed_probe:
-        if CORRECTION_NOTE in prompt:
+        if CORRECTION_NOTE in prompt or "種間差ではなく個体内の異質性" in prompt:
             final(
                 "MEMORY_RECALLED: 変更前は種間差、変更後は個体内の異質性。"
                 "味噌とのアナロジーには尺度を同一視できない限界がある。"

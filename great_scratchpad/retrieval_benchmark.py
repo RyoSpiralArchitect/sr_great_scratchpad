@@ -376,6 +376,9 @@ def benchmark_dialogue_retrieval(
             "run_id": suite.get("run_id"),
             "scenario_sha256": suite.get("scenario_sha256"),
             "dialogue_runner_sha256": suite.get("dialogue_runner_sha256"),
+            "runtime_component_sha256": suite.get("runtime_component_sha256", {}),
+            "memory_fixture_sha256": suite.get("memory_fixture_sha256"),
+            "frozen_note_replay": suite.get("frozen_note_replay"),
             "llm": suite.get("llm", {}),
         },
         "assessment_identity": {

@@ -10,8 +10,9 @@ from .centerline import analyze_centerline, render_centerline_hints
 from .chat import append_trace_events, llm_trace, run_chat_turn
 from .experiments import add_run_id, make_run_id, write_manifest
 from .llm import call_llm_result, config_with_output_token_limit, llm_config_metadata
+from .memory import add_turn
 from .storage import ensure_root, ensure_thread_dirs, load_llm_config, now_iso, safe_id
-from .text import limit_text_tail
+from .text import auto_keys, build_turn_md, limit_text_tail
 
 DIALOGUE_CONDITIONS = {
     "raw-raw": ("raw", "raw"),
@@ -22,6 +23,10 @@ DIALOGUE_CONDITIONS = {
     "write-no-recall": ("write-no-recall", "write-no-recall"),
     "probe-top1": ("probe-top1", "probe-top1"),
     "probe-top2": ("probe-top2", "probe-top2"),
+    "replay-no-recall": ("replay-no-recall", "replay-no-recall"),
+    "replay-top1": ("replay-top1", "replay-top1"),
+    "replay-top2": ("replay-top2", "replay-top2"),
+    "replay-full": ("replay-full", "replay-full"),
 }
 DEFAULT_DIALOGUE_CONDITIONS = (
     "raw-raw",
@@ -40,9 +45,36 @@ MECHANISM_DIALOGUE_CONDITIONS = (
     "probe-top2",
     "scratchpad-scratchpad",
 )
+FROZEN_REPLAY_DIALOGUE_CONDITIONS = (
+    "replay-no-recall",
+    "replay-top1",
+    "replay-top2",
+    "replay-full",
+)
 PLAIN_DIALOGUE_MODES = frozenset({"raw", "centerline-only"})
 SCRATCHPAD_DIALOGUE_MODES = frozenset(
-    {"scratchpad", "write-no-recall", "probe-top1", "probe-top2"}
+    {
+        "scratchpad",
+        "write-no-recall",
+        "probe-top1",
+        "probe-top2",
+        "replay-no-recall",
+        "replay-top1",
+        "replay-top2",
+        "replay-full",
+    }
+)
+FROZEN_REPLAY_DIALOGUE_MODES = frozenset(
+    {"replay-no-recall", "replay-top1", "replay-top2", "replay-full"}
+)
+FROZEN_NOTE_FIELDS = (
+    "text",
+    "center",
+    "trajectory",
+    "anchors",
+    "assumptions",
+    "open_questions",
+    "drift_risks",
 )
 RELATION_PROBE_METHOD = "marker-role-order-v1"
 
@@ -239,6 +271,162 @@ def dialogue_scenario_hash(scenario: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def canonical_json_sha256(value: object) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def dialogue_runtime_component_hashes() -> dict[str, str]:
+    package_dir = Path(__file__).parent
+    return {
+        name: hashlib.sha256((package_dir / name).read_bytes()).hexdigest()
+        for name in ("chat.py", "dialogue.py", "memory.py", "text.py")
+    }
+
+
+def load_dialogue_memory_fixture(path: Path) -> dict:
+    path = path.expanduser().resolve()
+    if not path.exists():
+        raise SystemExit(f"Dialogue memory fixture not found: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Dialogue memory fixture is not valid JSON: {path}: {exc}") from exc
+    if not isinstance(data, dict) or data.get("schema_version") != 1:
+        raise SystemExit("Dialogue memory fixture must be a schema_version=1 JSON object.")
+    fixture_id = str(data.get("id", "")).strip()
+    title = str(data.get("title", fixture_id)).strip()
+    if not fixture_id or not title:
+        raise SystemExit("Dialogue memory fixture requires non-empty id and title fields.")
+
+    source = data.get("source")
+    if not isinstance(source, dict):
+        raise SystemExit("Dialogue memory fixture requires one source object.")
+    for field in (
+        "run_id",
+        "session_id",
+        "condition",
+        "trace_path",
+        "trace_sha256",
+        "scenario_sha256",
+        "dialogue_runner_sha256",
+        "git_commit",
+    ):
+        if not str(source.get(field, "")).strip():
+            raise SystemExit(f"Dialogue memory fixture source requires {field!r}.")
+    for field in ("trace_sha256", "scenario_sha256", "dialogue_runner_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(source[field])):
+            raise SystemExit(f"Dialogue memory fixture source {field!r} must be SHA-256.")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(source["git_commit"])):
+        raise SystemExit("Dialogue memory fixture source 'git_commit' must be a full Git SHA.")
+
+    raw_entries = data.get("entries")
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise SystemExit("Dialogue memory fixture requires at least one entry.")
+    entries: list[dict] = []
+    seen_ids: set[str] = set()
+    previous_turn = 0
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, dict):
+            raise SystemExit("Each dialogue memory fixture entry must be a JSON object.")
+        entry_id = str(raw_entry.get("id", "")).strip()
+        try:
+            after_turn = int(raw_entry.get("after_turn"))
+            source_note_number = int(raw_entry.get("source_note_number"))
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                "Dialogue memory fixture after_turn and source_note_number must be integers."
+            ) from exc
+        source_speaker = str(raw_entry.get("source_speaker", "")).strip().upper()
+        speaker_binding = str(raw_entry.get("speaker_binding", "")).strip().lower()
+        created_at = str(raw_entry.get("created_at", "")).strip()
+        if (
+            not entry_id
+            or entry_id in seen_ids
+            or after_turn < 1
+            or after_turn < previous_turn
+            or source_note_number < 1
+            or source_speaker not in {"A", "B"}
+            or speaker_binding != "turn-speaker"
+            or not created_at
+        ):
+            raise SystemExit(
+                "Dialogue memory fixture entries require unique ordered ids, after_turn >= 1, "
+                "source_note_number >= 1, source_speaker=A|B, "
+                "speaker_binding=turn-speaker, and created_at."
+            )
+        payload_raw = raw_entry.get("payload")
+        if not isinstance(payload_raw, dict):
+            raise SystemExit("Dialogue memory fixture entry payload must be one JSON object.")
+        payload = {field: str(payload_raw.get(field, "")) for field in FROZEN_NOTE_FIELDS}
+        if not payload["text"].strip():
+            raise SystemExit("Dialogue memory fixture entry payload requires non-empty text.")
+        payload_sha256 = canonical_json_sha256(payload)
+        if payload_sha256 != str(raw_entry.get("payload_sha256", "")):
+            raise SystemExit(
+                f"Dialogue memory fixture payload hash mismatch for entry {entry_id!r}."
+            )
+        source_note_sha256 = str(raw_entry.get("source_note_sha256", ""))
+        if not re.fullmatch(r"[0-9a-f]{64}", source_note_sha256):
+            raise SystemExit(
+                f"Dialogue memory fixture source note hash is invalid for entry {entry_id!r}."
+            )
+        retrieval_keys = auto_keys(
+            payload["anchors"],
+            payload["center"],
+            payload["trajectory"],
+            payload["open_questions"],
+            payload["drift_risks"],
+            payload["assumptions"],
+            payload["text"],
+        )
+        rendered = build_turn_md(
+            turn_no=source_note_number,
+            speaker="note",
+            raw=payload["text"],
+            center=payload["center"],
+            trajectory=payload["trajectory"],
+            anchors=payload["anchors"],
+            assumptions=payload["assumptions"],
+            open_questions=payload["open_questions"],
+            drift_risks=payload["drift_risks"],
+            retrieval_keys=retrieval_keys,
+            created_at=created_at,
+        )
+        if hashlib.sha256(rendered.encode("utf-8")).hexdigest() != source_note_sha256:
+            raise SystemExit(
+                f"Dialogue memory fixture cannot reproduce source note for entry {entry_id!r}."
+            )
+        entries.append(
+            {
+                "id": entry_id,
+                "after_turn": after_turn,
+                "speaker_binding": speaker_binding,
+                "source_speaker": source_speaker,
+                "source_note_number": source_note_number,
+                "created_at": created_at,
+                "payload": payload,
+                "payload_sha256": payload_sha256,
+                "source_note_sha256": source_note_sha256,
+            }
+        )
+        seen_ids.add(entry_id)
+        previous_turn = after_turn
+
+    public = {
+        "schema_version": 1,
+        "id": fixture_id,
+        "title": title,
+        "source": dict(source),
+        "entries": entries,
+    }
+    return {
+        **public,
+        "_path": str(path),
+        "_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
 def normalize_condition_name(name: str) -> str:
     normalized = name.strip().lower().replace("_", "-").replace("/", "-")
     aliases = {
@@ -254,6 +442,10 @@ def normalize_condition_name(name: str) -> str:
         "selective": "probe-top1",
         "selective-recall": "probe-top1",
         "selective-top2": "probe-top2",
+        "frozen-no-recall": "replay-no-recall",
+        "frozen-top1": "replay-top1",
+        "frozen-top2": "replay-top2",
+        "frozen-full": "replay-full",
     }
     return aliases.get(normalized, normalized)
 
@@ -263,12 +455,13 @@ def resolve_dialogue_conditions(
     mirror_mixed: bool = True,
     preset: str = "matrix",
 ) -> list[str]:
-    if preset not in {"matrix", "ablation", "mechanism"}:
+    if preset not in {"matrix", "ablation", "mechanism", "replay"}:
         raise SystemExit(f"Unknown dialogue preset: {preset!r}")
     defaults = {
         "matrix": DEFAULT_DIALOGUE_CONDITIONS,
         "ablation": ABLATION_DIALOGUE_CONDITIONS,
         "mechanism": MECHANISM_DIALOGUE_CONDITIONS,
+        "replay": FROZEN_REPLAY_DIALOGUE_CONDITIONS,
     }[preset]
     requested = (
         [part for part in str(value).split(",") if part.strip()]
@@ -474,7 +667,19 @@ Current message:
 Reply as Speaker {speaker}. Advance the shared inquiry without wrapping it up prematurely. Utterance {turn}/{turns}."""
 
 
-def scratchpad_dialogue_context(scenario: dict, speaker: str, turn: int, turns: int) -> str:
+def scratchpad_dialogue_context(
+    scenario: dict,
+    speaker: str,
+    turn: int,
+    turns: int,
+    fixture_replay: bool = False,
+) -> str:
+    replay_instruction = ""
+    if fixture_replay:
+        replay_instruction = (
+            "\nFrozen memory notes are supplied by the runtime. Do not request any "
+            "scratchpad action; return the final conversational message directly."
+        )
     return f"""You are Speaker {speaker} in a controlled peer dialogue between two instances of the same model.
 The current user message comes from the peer model and sometimes a fixed moderator checkpoint.
 
@@ -484,7 +689,7 @@ Fixed agenda:
 Opening question shared by both speakers:
 {scenario['opening']}
 
-Respond naturally in Japanese to the peer. Keep the final conversational message complete and concise: 2 to 4 sentences and no more than {scenario['max_reply_chars']} Japanese characters. If using scratchpad.add_note, keep text under 120 Japanese characters and every other field under 40; omit detail rather than lengthening the JSON. Do not mention experiments, roles, token budgets, JSON protocol, or the scratchpad. Use scratchpad memory only when it improves continuity or preserves a correction, analogy boundary, center shift, or unresolved question. This is utterance {turn} of {turns}."""
+Respond naturally in Japanese to the peer. Keep the final conversational message complete and concise: 2 to 4 sentences and no more than {scenario['max_reply_chars']} Japanese characters. If using scratchpad.add_note, keep text under 120 Japanese characters and every other field under 40; omit detail rather than lengthening the JSON. Do not mention experiments, roles, token budgets, JSON protocol, or the scratchpad. Use scratchpad memory only when it improves continuity or preserves a correction, analogy boundary, center shift, or unresolved question. This is utterance {turn} of {turns}.{replay_instruction}"""
 
 
 def call_raw_dialogue_turn(
@@ -701,6 +906,119 @@ def append_jsonl(path: Path, item: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def apply_dialogue_memory_fixture(
+    fixture: dict,
+    session_dir: Path,
+    scratchpads: dict[str, tuple[Path, Path, str]],
+    turn: int,
+    speaker: str,
+) -> list[dict]:
+    events: list[dict] = []
+    entries = [entry for entry in fixture["entries"] if entry["after_turn"] == turn]
+    if not entries:
+        return events
+    scratch_root, _tdir, thread_id = scratchpads[speaker]
+    for entry in entries:
+        payload = entry["payload"]
+        note_number, note_path = add_turn(
+            root=scratch_root,
+            thread_id=thread_id,
+            speaker="note",
+            raw=payload["text"],
+            center=payload["center"],
+            trajectory=payload["trajectory"],
+            anchors=payload["anchors"],
+            assumptions=payload["assumptions"],
+            open_questions=payload["open_questions"],
+            drift_risks=payload["drift_risks"],
+            created_at=entry["created_at"],
+        )
+        if note_number != entry["source_note_number"]:
+            raise SystemExit(
+                f"Frozen note sequence mismatch for {entry['id']!r}: "
+                f"expected {entry['source_note_number']:06d}, got {note_number:06d}."
+            )
+        note_sha256 = hashlib.sha256(note_path.read_bytes()).hexdigest()
+        if note_sha256 != entry["source_note_sha256"]:
+            raise SystemExit(
+                f"Frozen note byte hash mismatch for entry {entry['id']!r}."
+            )
+        events.append(
+            {
+                "time": now_iso(),
+                "event": "fixture_note_applied",
+                "fixture_id": fixture["id"],
+                "fixture_sha256": fixture["_sha256"],
+                "fixture_entry_id": entry["id"],
+                "speaker_binding": entry["speaker_binding"],
+                "source_speaker": entry["source_speaker"],
+                "source_note_number": entry["source_note_number"],
+                "created_at": entry["created_at"],
+                "payload": payload,
+                "payload_sha256": entry["payload_sha256"],
+                "note_number": note_number,
+                "note_path": str(note_path.relative_to(session_dir)),
+                "note_sha256": note_sha256,
+                "expected_note_sha256": entry["source_note_sha256"],
+                "thread_id": thread_id,
+            }
+        )
+    return events
+
+
+def dialogue_memory_fixture_integrity(sessions: list[dict], fixture: dict) -> dict:
+    replay_sessions = [
+        session
+        for session in sessions
+        if session.get("condition") in FROZEN_REPLAY_DIALOGUE_CONDITIONS
+    ]
+    expected_by_id = {entry["id"]: entry for entry in fixture["entries"]}
+    hashes_by_entry: dict[str, list[str]] = {entry_id: [] for entry_id in expected_by_id}
+    complete_sessions = 0
+    for session in replay_sessions:
+        notes = session.get("fixture_notes", [])
+        note_ids = [str(note.get("fixture_entry_id", "")) for note in notes]
+        if len(note_ids) == len(expected_by_id) and set(note_ids) == set(expected_by_id):
+            complete_sessions += 1
+        for note in notes:
+            entry_id = str(note.get("fixture_entry_id", ""))
+            if entry_id in hashes_by_entry:
+                hashes_by_entry[entry_id].append(str(note.get("note_sha256", "")))
+
+    entry_results: list[dict] = []
+    for entry_id, entry in expected_by_id.items():
+        hashes = hashes_by_entry[entry_id]
+        unique_hashes = sorted(set(hashes))
+        entry_results.append(
+            {
+                "fixture_entry_id": entry_id,
+                "expected_note_sha256": entry["source_note_sha256"],
+                "observations": len(hashes),
+                "unique_note_sha256": unique_hashes,
+                "matches_source": bool(hashes)
+                and all(value == entry["source_note_sha256"] for value in hashes),
+                "identical_across_sessions": len(unique_hashes) == 1,
+            }
+        )
+    verified = bool(replay_sessions) and complete_sessions == len(replay_sessions)
+    verified = verified and all(
+        item["observations"] == len(replay_sessions)
+        and item["matches_source"]
+        and item["identical_across_sessions"]
+        for item in entry_results
+    )
+    return {
+        "fixture_id": fixture["id"],
+        "fixture_sha256": fixture["_sha256"],
+        "expected_entries_per_session": len(expected_by_id),
+        "replay_sessions": len(replay_sessions),
+        "complete_sessions": complete_sessions,
+        "note_bytes_identical": verified,
+        "verified": verified,
+        "entries": entry_results,
+    }
 
 
 def anchor_coverage(records: list[dict], anchors: list[str]) -> dict:
@@ -949,21 +1267,34 @@ def dialogue_report_markdown(result: dict) -> str:
         f"- JSON-repair reserve: {plan['max_repair_output_tokens_suite']} tokens",
         f"- Provider-output ceiling: {plan['max_provider_output_tokens_suite']} tokens",
         f"- Worst-case API calls: {plan['worst_api_calls']}",
+    ]
+    if result.get("memory_fixture"):
+        replay = result.get("frozen_note_replay", {})
+        lines.extend(
+            [
+                f"- Frozen memory fixture: {result['memory_fixture']['id']}",
+                f"- Fixture SHA-256: {result['memory_fixture_sha256']}",
+                f"- Frozen note byte identity verified: {replay.get('verified', False)}",
+            ]
+        )
+    lines.extend(
+        [
         "",
         "The accepted output-token allowance is pooled across valid internal calls in each scratchpad utterance. Invalid JSON is charged to a separate bounded repair reserve; provider usage reports both. Input tokens are intentionally reported separately because prompt and memory overhead are part of the treatment cost.",
         "",
         "## Conditions",
         "",
-        "| Session | Start | A | B | Status | Calls | Tools | Writes | Memory ctx | Retrieval ctx | Recoveries | Parse errors | Prompt tok | Output tok | Anchors | Literal | Relation |",
-        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-    ]
+        "| Session | Start | A | B | Status | Calls | Tools | Model writes | Fixture writes | Memory ctx | Retrieval ctx | Recoveries | Parse errors | Prompt tok | Output tok | Anchors | Literal | Relation |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     for session in result.get("sessions", []):
         usage = session.get("usage", {})
         coverage = session.get("anchor_coverage", {})
         probes = session.get("literal_probe_evidence", {})
         relations = session.get("relation_probe_evidence", {})
         lines.append(
-            "| {session_id} | {start} | {a} | {b} | {status} | {calls} | {tools} | {writes} | {memory_ctx} | {retrieval_ctx} | {recoveries} | {parse_errors} | {prompt} | {completion} | {found}/{total} | {probe_passed}/{probe_total} | {relation_passed}/{relation_total} |".format(
+            "| {session_id} | {start} | {a} | {b} | {status} | {calls} | {tools} | {writes} | {fixture_writes} | {memory_ctx} | {retrieval_ctx} | {recoveries} | {parse_errors} | {prompt} | {completion} | {found}/{total} | {probe_passed}/{probe_total} | {relation_passed}/{relation_total} |".format(
                 session_id=session["session_id"],
                 start=session["starting_speaker"],
                 a=session["speaker_modes"]["A"],
@@ -972,6 +1303,7 @@ def dialogue_report_markdown(result: dict) -> str:
                 calls=session["model_calls"],
                 tools=session["tool_steps"],
                 writes=session["memory_writes"],
+                fixture_writes=session.get("fixture_memory_writes", 0),
                 memory_ctx=session["memory_context_injections"],
                 retrieval_ctx=session.get("retrieval_context_injections", 0),
                 recoveries=session["protocol_recoveries"],
@@ -991,7 +1323,7 @@ def dialogue_report_markdown(result: dict) -> str:
             "",
             "## Review Lenses",
             "",
-            "Raw/raw is the sampling baseline. Centerline-only adds deterministic navigation without the JSON/tool protocol. Write-no-recall uses the same writing runtime but blocks every read path and injects no saved notes. Probe-top1 and probe-top2 keep those read actions blocked and inject only the top one or two lexical hits at frozen probe turns. Scratchpad/scratchpad enables writing plus recent-note recall throughout. Mixed sessions, when selected, expose position effects.",
+            "Raw/raw is the sampling baseline. Centerline-only adds deterministic navigation without the JSON/tool protocol. Write-no-recall uses the same writing runtime but blocks every read path and injects no saved notes. Probe-top1 and probe-top2 keep those read actions blocked and inject only the top one or two lexical hits at frozen probe turns. Scratchpad/scratchpad enables writing plus recent-note recall throughout. Replay conditions disable model writes, apply byte-identical frozen notes after fixed turns, and vary only no recall, top-1, top-2, or full recent-note visibility. Mixed sessions, when selected, expose position effects.",
             "",
         ]
     )
@@ -1028,6 +1360,7 @@ def run_dialogue_matrix(
     history_chars: int = 900,
     alternate_starter: bool = False,
     rotate_condition_order: bool = False,
+    memory_fixture_path: Path | None = None,
 ) -> dict:
     ensure_root(root)
     scenario = load_dialogue_scenario(scenario_path)
@@ -1059,6 +1392,23 @@ def run_dialogue_matrix(
     if history_chars < 1:
         raise SystemExit("history_chars must be positive.")
 
+    replay_requested = any(
+        condition in FROZEN_REPLAY_DIALOGUE_CONDITIONS for condition in conditions
+    )
+    if replay_requested and memory_fixture_path is None:
+        raise SystemExit("Frozen replay conditions require --memory-fixture.")
+    if memory_fixture_path is not None and not replay_requested:
+        raise SystemExit("--memory-fixture requires at least one frozen replay condition.")
+    memory_fixture = (
+        load_dialogue_memory_fixture(memory_fixture_path)
+        if memory_fixture_path is not None
+        else None
+    )
+    if memory_fixture and max(entry["after_turn"] for entry in memory_fixture["entries"]) > turn_count:
+        raise SystemExit(
+            "Dialogue turn count ends before every frozen memory fixture entry is applied."
+        )
+
     cfg = load_llm_config(root, llm_config, profile)
     run_id = make_run_id("dialogue")
     out_dir = out_dir.expanduser().resolve()
@@ -1072,6 +1422,14 @@ def run_dialogue_matrix(
         json.dumps(public_scenario, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    public_fixture = None
+    if memory_fixture:
+        public_fixture = {
+            key: value for key, value in memory_fixture.items() if not key.startswith("_")
+        }
+        (out_dir / "memory_fixture.snapshot.json").write_bytes(
+            Path(memory_fixture["_path"]).read_bytes()
+        )
     result: dict = {
         "run_id": run_id,
         "status": "running",
@@ -1082,7 +1440,11 @@ def run_dialogue_matrix(
         "scenario_path": str(scenario["_path"]),
         "scenario_sha256": scenario_hash,
         "dialogue_runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "runtime_component_sha256": dialogue_runtime_component_hashes(),
         "scenario": public_scenario,
+        "memory_fixture_path": memory_fixture["_path"] if memory_fixture else None,
+        "memory_fixture_sha256": memory_fixture["_sha256"] if memory_fixture else None,
+        "memory_fixture": public_fixture,
         "llm": llm_config_metadata(cfg),
         "policy": policy,
         "history_chars": history_chars,
@@ -1144,6 +1506,11 @@ def run_dialogue_matrix(
                 "model_calls": 0,
                 "tool_steps": 0,
                 "memory_writes": 0,
+                "fixture_memory_writes": 0,
+                "fixture_notes": [],
+                "model_memory_policy": (
+                    "read-only" if condition in FROZEN_REPLAY_DIALOGUE_CONDITIONS else policy
+                ),
                 "memory_context_injections": 0,
                 "retrieval_context_injections": 0,
                 "retrieval_context_sources": 0,
@@ -1198,15 +1565,20 @@ def run_dialogue_matrix(
                         )
                     else:
                         scratch_root, tdir, thread_id = scratchpads[speaker]
-                        mode_recent_n = recent_n if mode == "scratchpad" else 0
-                        allowed_actions = (
-                            {"scratchpad.add_note"}
-                            if mode in {"write-no-recall", "probe-top1", "probe-top2"}
-                            else None
+                        fixture_replay = mode in FROZEN_REPLAY_DIALOGUE_MODES
+                        mode_recent_n = (
+                            recent_n if mode in {"scratchpad", "replay-full"} else 0
                         )
+                        if fixture_replay:
+                            allowed_actions: set[str] | frozenset[str] | None = frozenset()
+                        elif mode in {"write-no-recall", "probe-top1", "probe-top2"}:
+                            allowed_actions = {"scratchpad.add_note"}
+                        else:
+                            allowed_actions = None
                         selective_recall = scenario["selective_recall"]
                         retrieval_active = (
-                            mode in {"probe-top1", "probe-top2"}
+                            mode
+                            in {"probe-top1", "probe-top2", "replay-top1", "replay-top2"}
                             and turn in selective_recall["turns"]
                         )
                         retrieval_query = incoming
@@ -1230,21 +1602,25 @@ def run_dialogue_matrix(
                             trace_events=events,
                             json_repair_steps=json_repair_steps,
                             queue_writes=False,
-                            policy=policy,
+                            policy="read-only" if fixture_replay else policy,
                             output_token_budget=turn_output_tokens,
                             max_model_calls=1 + max_steps + json_repair_steps,
                             per_call_output_token_limit=plan[
                                 "scratchpad_output_tokens_per_call"
                             ],
                             system_addendum=scratchpad_dialogue_context(
-                                scenario, speaker, turn, turn_count
+                                scenario,
+                                speaker,
+                                turn,
+                                turn_count,
+                                fixture_replay=fixture_replay,
                             ),
                             trace_io=True,
                             history_chars=history_chars,
                             allowed_actions=allowed_actions,
                             retrieval_query=retrieval_query if retrieval_active else "",
                             retrieval_top=(
-                                (1 if mode == "probe-top1" else 2)
+                                (1 if mode in {"probe-top1", "replay-top1"} else 2)
                                 if retrieval_active
                                 else 0
                             ),
@@ -1329,6 +1705,61 @@ def run_dialogue_matrix(
                     abort = True
                     write_manifest(session_manifest_path, session)
                     break
+                if memory_fixture and mode in FROZEN_REPLAY_DIALOGUE_MODES:
+                    try:
+                        fixture_events = apply_dialogue_memory_fixture(
+                            fixture=memory_fixture,
+                            session_dir=session_dir,
+                            scratchpads=scratchpads,
+                            turn=turn,
+                            speaker=speaker,
+                        )
+                    except SystemExit as exc:
+                        fixture_events = [
+                            {
+                                "time": now_iso(),
+                                "event": "dialogue_error",
+                                "error": str(exc),
+                            }
+                        ]
+                        tag_dialogue_events(
+                            fixture_events,
+                            run_id,
+                            session_id,
+                            condition,
+                            turn,
+                            speaker,
+                            mode,
+                        )
+                        append_trace_events(trace_path, fixture_events)
+                        session["status"] = "failed"
+                        session["error"] = str(exc)
+                        abort = True
+                        write_manifest(session_manifest_path, session)
+                        break
+                    tag_dialogue_events(
+                        fixture_events,
+                        run_id,
+                        session_id,
+                        condition,
+                        turn,
+                        speaker,
+                        mode,
+                    )
+                    append_trace_events(trace_path, fixture_events)
+                    session["fixture_memory_writes"] += len(fixture_events)
+                    session["fixture_notes"].extend(
+                        {
+                            "fixture_entry_id": event["fixture_entry_id"],
+                            "dialogue_turn": event["dialogue_turn"],
+                            "speaker": event["speaker"],
+                            "note_number": event["note_number"],
+                            "note_path": event["note_path"],
+                            "payload_sha256": event["payload_sha256"],
+                            "note_sha256": event["note_sha256"],
+                        }
+                        for event in fixture_events
+                    )
                 write_manifest(session_manifest_path, session)
 
             if session["status"] == "running":
@@ -1354,6 +1785,12 @@ def run_dialogue_matrix(
         if abort:
             break
 
+    if memory_fixture:
+        result["frozen_note_replay"] = dialogue_memory_fixture_integrity(
+            result["sessions"], memory_fixture
+        )
+        if not result["frozen_note_replay"]["verified"]:
+            abort = True
     result["status"] = "failed" if abort else "ok"
     result["updated_at"] = now_iso()
     report_path = out_dir / "report.md"

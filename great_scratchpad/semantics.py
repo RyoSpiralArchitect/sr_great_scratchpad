@@ -447,6 +447,34 @@ def load_dialogue_semantic_corpus(run_dir: Path) -> tuple[dict, list[dict], dict
                 }
                 notes.append(note)
                 documents.append(note)
+            if event.get("event") == "fixture_note_applied" and isinstance(payload, dict):
+                fixture_entry_id = str(event.get("fixture_entry_id", "")).strip()
+                note_number = int(event.get("note_number", len(notes) + 1))
+                note_text = str(payload.get("text", "")).strip()
+                analysis_text = "\n".join(
+                    str(payload.get(field, "")).strip()
+                    for field in NOTE_FIELDS
+                    if str(payload.get(field, "")).strip()
+                )
+                note_path = str(event.get("note_path", "")).strip()
+                note = {
+                    "id": f"{session_id}:fixture-note:{fixture_entry_id}",
+                    "kind": "note",
+                    "condition": condition,
+                    "session_id": session_id,
+                    "turn": turn,
+                    "speaker": speaker,
+                    "text": note_text,
+                    "analysis_text": analysis_text,
+                    "fields": {field: str(payload.get(field, "")) for field in NOTE_FIELDS},
+                    "source_path": str(session_dir / note_path) if note_path else "",
+                    "fixture_entry_id": fixture_entry_id,
+                    "note_number": note_number,
+                    "payload_sha256": str(event.get("payload_sha256", "")),
+                    "note_sha256": str(event.get("note_sha256", "")),
+                }
+                notes.append(note)
+                documents.append(note)
 
         utterances: list[dict] = []
         for item in transcript:
@@ -971,6 +999,9 @@ def analyze_dialogue_semantics(
             "run_id": suite.get("run_id"),
             "scenario_sha256": suite.get("scenario_sha256"),
             "dialogue_runner_sha256": suite.get("dialogue_runner_sha256"),
+            "runtime_component_sha256": suite.get("runtime_component_sha256", {}),
+            "memory_fixture_sha256": suite.get("memory_fixture_sha256"),
+            "frozen_note_replay": suite.get("frozen_note_replay"),
             "llm": suite.get("llm", {}),
             "history_chars": suite.get("history_chars"),
             "budget_plan": suite.get("budget_plan", {}),

@@ -35,6 +35,7 @@ def add_turn(
     assumptions: str = "",
     open_questions: str = "",
     drift_risks: str = "",
+    created_at: str | None = None,
 ) -> tuple[int, Path]:
     ensure_root(root)
     tdir = ensure_thread(root, thread_id)
@@ -63,6 +64,7 @@ def add_turn(
         open_questions=open_questions,
         drift_risks=drift_risks,
         retrieval_keys=keys,
+        created_at=created_at,
     )
 
     filename = f"{turn_no:06d}-{speaker}.md"
@@ -70,7 +72,7 @@ def add_turn(
     path.write_text(md, encoding="utf-8")
 
     meta["last_turn"] = turn_no
-    meta["updated_at"] = now_iso()
+    meta["updated_at"] = created_at or now_iso()
     save_meta(tdir, meta)
 
     return turn_no, path

@@ -97,12 +97,14 @@ def build_turn_md(
     open_questions: str,
     drift_risks: str,
     retrieval_keys: list[str],
+    created_at: str | None = None,
 ) -> str:
     keys = ", ".join(retrieval_keys) if retrieval_keys else "(none)"
+    date = created_at or now_iso()
 
     return f"""# Turn {turn_no:06d} — {speaker}
 
-Date: {now_iso()}
+Date: {date}
 Speaker: {speaker}
 
 ## Raw articulation

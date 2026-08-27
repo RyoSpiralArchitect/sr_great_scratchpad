@@ -855,6 +855,9 @@ def cmd_experiment(args: argparse.Namespace) -> None:
             history_chars=args.history_chars,
             alternate_starter=args.alternate_starter,
             rotate_condition_order=args.rotate_condition_order,
+            memory_fixture_path=(
+                Path(args.memory_fixture).expanduser() if args.memory_fixture else None
+            ),
         )
         if args.json:
             print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -1474,9 +1477,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp2.add_argument(
         "--preset",
-        choices=("matrix", "ablation", "mechanism"),
+        choices=("matrix", "ablation", "mechanism", "replay"),
         default="matrix",
-        help="matrix compares raw/scratchpad pairings; ablation isolates centerline, write, and recall; mechanism compares no recall, probe-only top-1/top-2, and full recall.",
+        help="matrix compares raw/scratchpad pairings; ablation isolates centerline, write, and recall; mechanism compares live-written no recall, top-1/top-2, and full recall; replay applies one frozen note fixture across no recall, top-1/top-2, and full recall.",
+    )
+    sp2.add_argument(
+        "--memory-fixture",
+        default=None,
+        help="Validated frozen-note JSON fixture required by --preset replay.",
     )
     sp2.add_argument(
         "--no-mirror-mixed",

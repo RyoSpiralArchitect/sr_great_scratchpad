@@ -312,6 +312,24 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
 
 `mechanism` は `write-no-recall`、`probe-top1`、`probe-top2`、`scratchpad/scratchpad` の4条件です。probe条件はmodelからのread actionを閉じたまま、scenarioで凍結したturnだけmoderator interventionをqueryに使い、compact化した上位1件または2件を直接注入します。traceにはquery、score、source path、元文字数、注入文字数が残ります。relation probeは単語の有無だけでなく、変更前・変更後の役割、順序、アナロジー限界を検査します。
 
+同じnoteを全条件に同じturnで投入し、可視性とtop-kだけを変えるfrozen-note replay:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset replay \
+  --memory-fixture scenarios/luna_delayed_recall_frozen_notes.json \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 1 \
+  --turn-output-tokens 600 \
+  --max-api-calls 144 \
+  --max-suite-output-tokens 48000
+```
+
+`replay` は `replay-no-recall`、`replay-top1`、`replay-top2`、`replay-full` の4条件です。modelからの全scratchpad actionを閉じ、fixtureの4noteを完了turnの後に決めた話者へ投入します。payload hash、donor note hash、条件間のnote byte identityはpreflightとsuite完了時に検証され、fixture writeとmodel writeは別々に記録されます。
+
 既存runのretrievalをprovider callなしで再生し、own-threadとhard-distractor stressを分けて測る:
 
 ```bash
@@ -321,7 +339,7 @@ python3 -S sr_great_scratchpad.py experiment retrieval \
   --distractor-limit 24
 ```
 
-reportは `intervention` とfull `current-message` queryを別々に、Recall@1/2/3/5、MRR、候補数、compact注入文字数とともに出します。n=8へのpost-hoc適用とLuna n=1 mechanism校正の結果は [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) にあります。校正ではtop1のsourceがrank 2、top2ではrank 1となり、top2だけがliteral 2/2とrelation 1/1を同時に通過しました。条件ごとのnote内容が異なるため、n=4へ進む前にfrozen-note replayで固定する境界です。
+reportは `intervention` とfull `current-message` queryを別々に、Recall@1/2/3/5、MRR、候補数、compact注入文字数とともに出します。n=8へのpost-hoc適用、Luna n=1 mechanism校正、frozen-note replay protocolは [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) にあります。条件ごとのnote内容が異なる問題を、tracked fixtureとbyte-identity gateで切り離しています。
 
 凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
 
@@ -646,6 +664,24 @@ python3 -S sr_great_scratchpad.py experiment dialogue \
 
 The `mechanism` preset runs `write-no-recall`, `probe-top1`, `probe-top2`, and `scratchpad/scratchpad`. Probe conditions keep model-requested read actions blocked and use only the frozen moderator intervention to retrieve one or two compact notes at selected turns. Traces retain the query, score, source path, source characters, and injected characters. Relation probes require the old and new levels to occupy the requested before/after roles, in order, with an explicit analogy boundary.
 
+Hold note content and timing constant while varying only visibility and top-k:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset replay \
+  --memory-fixture scenarios/luna_delayed_recall_frozen_notes.json \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 1 \
+  --turn-output-tokens 600 \
+  --max-api-calls 144 \
+  --max-suite-output-tokens 48000
+```
+
+The `replay` preset runs `replay-no-recall`, `replay-top1`, `replay-top2`, and `replay-full`. It blocks every model-requested scratchpad action and applies the four tracked fixture notes to the current speaker after fixed completed turns. Preflight and suite-final gates validate payload hashes, donor note hashes, and byte identity across conditions. Fixture writes and model writes remain separate in traces and manifests.
+
 Replay retrieval over a frozen run without provider calls:
 
 ```bash
@@ -655,7 +691,7 @@ python3 -S sr_great_scratchpad.py experiment retrieval \
   --distractor-limit 24
 ```
 
-The report separates intervention-only and full-current-message queries, own-thread and hard-distractor scopes, Recall@1/2/3/5, MRR, candidate counts, and compact injection characters. See [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) for the post-hoc n=8 analysis and Luna n=1 mechanism calibration. The calibration ranked the source second under top-1 and first under top-2; only top-2 passed both literal 2/2 and relation 1/1. Because note contents differed by condition, the next boundary is frozen-note replay before n=4.
+The report separates intervention-only and full-current-message queries, own-thread and hard-distractor scopes, Recall@1/2/3/5, MRR, candidate counts, and compact injection characters. See [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) for the post-hoc n=8 analysis, Luna n=1 mechanism calibration, and frozen-note replay protocol. The tracked fixture plus byte-identity gate removes independently generated note contents from the next visibility/cutoff comparison.
 
 Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
 

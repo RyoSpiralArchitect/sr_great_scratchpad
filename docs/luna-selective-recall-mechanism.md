@@ -137,10 +137,49 @@ The suite used 50 model calls, 71,546 prompt tokens, 8,712 completion tokens,
 13 bounded protocol recoveries, and zero JSON parse errors. Semantic and
 retrieval JSON/Markdown outputs reproduced byte-identically.
 
-## Revised next boundary
+## Frozen-note replay protocol
 
-Do not advance this independently written-note design directly to n=4. First
-freeze one note fixture with source-turn and distractor notes, replay that exact
-fixture across no-recall, top-1, top-2, and full-recall conditions, and keep
-generation order plus starter balanced. The next experiment should estimate
-retrieval availability and cutoff with note contents held constant.
+The replay design freezes the four notes written by the calibration-1
+`write-no-recall` control at dialogue turns 3, 4, 5, and 9. The tracked fixture
+is `scenarios/luna_delayed_recall_frozen_notes.json`. It binds every payload to
+the donor run, session, trace SHA-256, source commit, logical turn, original
+note number, creation time, payload SHA-256, and rendered note SHA-256.
+
+The `replay` preset runs four conditions:
+
+1. `replay-no-recall`
+2. `replay-top1`
+3. `replay-top2`
+4. `replay-full`
+
+All four disable model-requested scratchpad actions and apply the same fixture
+entry to the current turn's speaker after the same completed dialogue turn.
+No-recall exposes none of those notes, top-1 and top-2 expose lexical hits only
+at the frozen probe, and full exposes recent notes throughout. A run fails if
+an entry cannot reproduce the donor note hash, if the per-speaker note sequence
+changes, or if note bytes differ across replay sessions. Fixture events remain
+distinct from model-authored `memory_writes` in traces and manifests.
+
+Run the one-replicate boundary check before any increased-n spend:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_delayed_recall_ablation.json \
+  --profile openai-5.6-luna \
+  --preset replay \
+  --memory-fixture scenarios/luna_delayed_recall_frozen_notes.json \
+  --turns 12 \
+  --history-chars 700 \
+  --replicates 1 \
+  --turn-output-tokens 600 \
+  --max-api-calls 144 \
+  --max-suite-output-tokens 48000 \
+  --out-dir .great_scratchpad/runs/luna-frozen-replay-cal1
+```
+
+Before behavioral interpretation, require 4/4 complete sessions, four fixture
+events per session, zero model writes, verified cross-condition note-byte
+identity, exactly one selective injection in each top-k condition, and source
+visibility matching the requested cutoff. This n=1 run remains a manipulation
+and endpoint calibration. Only after it passes should a balanced n=4 estimate
+be considered.

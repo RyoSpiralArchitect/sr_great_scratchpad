@@ -178,6 +178,42 @@
       "target_id": "delayed-correction-turn-11",
       "treatment": "scratchpad-scratchpad",
       "control": "probe-top2"
+    },
+    {
+      "id": "replay-full-uplift",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "replay-full",
+      "control": "replay-no-recall"
+    },
+    {
+      "id": "replay-top1-uplift",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "replay-top1",
+      "control": "replay-no-recall"
+    },
+    {
+      "id": "replay-top2-uplift",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "replay-top2",
+      "control": "replay-no-recall"
+    },
+    {
+      "id": "replay-top2-vs-top1",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "replay-top2",
+      "control": "replay-top1"
+    },
+    {
+      "id": "replay-full-vs-top1",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "replay-full",
+      "control": "replay-top1"
+    },
+    {
+      "id": "replay-full-vs-top2",
+      "target_id": "delayed-correction-turn-11",
+      "treatment": "replay-full",
+      "control": "replay-top2"
     }
   ]
 }
