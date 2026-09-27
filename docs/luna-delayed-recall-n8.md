@@ -1,5 +1,10 @@
 # Luna delayed-recall Stage 2: independent n=8 confirmation
 
+2026-09-28 qualification: [PR 7 review resolution](pr7-review-resolution.md)
+fixes history-window isolation and visibility measurement. The saved numerical
+results below are preserved; passing the original gate does not establish that
+the old runner was free of those implementation confounds.
+
 ## Result boundary
 
 This independent cohort tests whether provider-visible scratchpad recall helps

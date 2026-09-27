@@ -41,11 +41,12 @@ def build_chat_prompt(
     observations: list[str],
     centerline_hints: str,
     history_chars: int = 4000,
+    history_context: str | None = None,
 ) -> str:
     return CHAT_PROMPT_TEMPLATE.format(
         thread_id=thread_id,
         recent_context=recent_context,
-        history=chat_history_text(history, history_chars),
+        history=history_context if history_context is not None else chat_history_text(history, history_chars),
         centerline_hints=centerline_hints,
         user_text=user_text.strip(),
         observations="\n\n".join(observations).strip() or "(none yet)",
@@ -238,6 +239,7 @@ def run_chat_turn(
     retrieval_query: str = "",
     retrieval_top: int = 0,
     retrieval_max_chars: int = 700,
+    history_context: str | None = None,
 ) -> str:
     observations: list[str] = []
     retrieval_sources: list[dict] = []
@@ -266,7 +268,15 @@ def run_chat_turn(
     add_note_requests = 0
     output_tokens_used = 0
     repair_output_tokens_used = 0
-    centerline = analyze_centerline(user_text, history)
+    # Controlled dialogues supply the same already-bounded transcript in every mode.
+    if history_context is None:
+        history_context = chat_history_text(history, history_chars)
+    visible_history = (
+        [{"role": "user", "content": history_context}]
+        if history_context.strip() not in {"", "(empty)", "(no earlier utterances)"}
+        else []
+    )
+    centerline = analyze_centerline(user_text, visible_history)
     centerline_hints = render_centerline_hints(centerline)
     record_trace(
         trace_events,
@@ -366,6 +376,7 @@ def run_chat_turn(
             observations=observations,
             centerline_hints=centerline_hints,
             history_chars=history_chars,
+            history_context=history_context,
         )
         request_system = runtime_system
         if add_note_requests > 0:

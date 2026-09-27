@@ -708,7 +708,12 @@ def call_raw_dialogue_turn(
         raise ValueError(f"Unsupported plain dialogue mode: {mode}")
     started = time.perf_counter()
     system_prompt = raw_dialogue_system(scenario, speaker, turn, turns)
-    history = dialogue_history(prior_records, speaker)
+    visible_transcript = render_dialogue_context(prior_records, history_chars)
+    history = (
+        [{"role": "user", "content": visible_transcript}]
+        if prior_records and visible_transcript
+        else []
+    )
     centerline = analyze_centerline(incoming, history)
     if mode == "centerline-only":
         system_prompt += (
@@ -1617,6 +1622,7 @@ def run_dialogue_matrix(
                             ),
                             trace_io=True,
                             history_chars=history_chars,
+                            history_context=render_dialogue_context(prior_records, history_chars),
                             allowed_actions=allowed_actions,
                             retrieval_query=retrieval_query if retrieval_active else "",
                             retrieval_top=(

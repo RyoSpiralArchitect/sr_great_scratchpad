@@ -19,6 +19,7 @@ SEMANTIC_RELATIVE_LABEL_THRESHOLD = 0.68
 SEMANTIC_BOOTSTRAP_SEED = 20260826
 SEMANTIC_BOOTSTRAP_RESAMPLES = 10000
 SEMANTIC_BOOTSTRAP_CONFIDENCE = 0.95
+NOTE_VISIBILITY_METHOD = "all-note-fields-max-provider-request-v2"
 NOTE_FIELDS = (
     "text",
     "center",
@@ -397,7 +398,7 @@ def load_dialogue_semantic_corpus(run_dir: Path) -> tuple[dict, list[dict], dict
         session_dir = run_dir / session_id
         transcript = load_jsonl(session_dir / "transcript.jsonl")
         events = load_jsonl(session_dir / "trace.jsonl")
-        prompts: dict[tuple[int, str], str] = {}
+        requests: dict[tuple[int, str], list[dict[str, str]]] = {}
         pending_notes: dict[tuple[int, str], dict] = {}
         notes: list[dict] = []
         for event in events:
@@ -407,8 +408,11 @@ def load_dialogue_semantic_corpus(run_dir: Path) -> tuple[dict, list[dict], dict
                 turn = 0
             speaker = str(event.get("speaker", ""))
             key = (turn, speaker)
-            if event.get("event") == "model_request" and key not in prompts:
-                prompts[key] = str(event.get("prompt", ""))
+            if event.get("event") == "model_request":
+                requests.setdefault(key, []).append({
+                    "prompt": str(event.get("prompt", "")),
+                    "system_prompt": str(event.get("system_prompt", "")),
+                })
             payload = event.get("payload")
             if (
                 event.get("event") == "model_output"
@@ -498,7 +502,7 @@ def load_dialogue_semantic_corpus(run_dir: Path) -> tuple[dict, list[dict], dict
         session_context[session_id] = {
             "session_id": session_id,
             "manifest": suite_session,
-            "prompts": prompts,
+            "requests": requests,
             "utterances": utterances,
             "notes": notes,
         }
@@ -696,10 +700,15 @@ def analyze_dialogue_semantics(
                     )
                 )
             source_note = candidate_notes[0] if candidate_notes else None
-            prompt = context["prompts"].get((target["turn"], target_document["speaker"]), "")
-            containment = (
-                ngram_containment(source_note["text"], prompt) if source_note is not None else 0.0
-            )
+            requests = context["requests"].get((target["turn"], target_document["speaker"]), [])
+            provider_inputs = [request["system_prompt"] + "\n\n" + request["prompt"] for request in requests]
+            containments = [
+                ngram_containment(source_note["analysis_text"], prompt) if source_note else 0.0
+                for prompt in provider_inputs
+            ]
+            # Report one actually supplied request, not a synthetic union of partial views.
+            best_request = max(range(len(containments)), key=containments.__getitem__) if containments else None
+            containment = containments[best_request] if best_request is not None else 0.0
             probe_passed, probe_total, probe_results = _probe_score(
                 context["manifest"], target["turn"]
             )
@@ -747,6 +756,13 @@ def analyze_dialogue_semantics(
                         source_note["frame_scores"][target["frame_id"]] if source_note else None
                     ),
                     "note_prompt_containment": round(containment, 6),
+                    "note_prompt_request_count": len(requests),
+                    "note_prompt_request_containments": [round(value, 6) for value in containments],
+                    "note_prompt_best_request": best_request + 1 if best_request is not None else None,
+                    "note_prompt_field_containment": {
+                        field: round(ngram_containment(value, provider_inputs[best_request]), 6)
+                        for field, value in source_note["fields"].items() if value.strip()
+                    } if source_note and best_request is not None else {},
                     "note_visible": containment >= 0.72,
                     "note_response_similarity": (
                         round(
@@ -994,7 +1010,7 @@ def analyze_dialogue_semantics(
         else run_dir / "semantic_analysis"
     )
     result: dict = {
-        "schema_version": 2,
+        "schema_version": 3,
         "generation_identity": {
             "run_id": suite.get("run_id"),
             "scenario_sha256": suite.get("scenario_sha256"),
@@ -1013,6 +1029,13 @@ def analyze_dialogue_semantics(
             "min_score": SEMANTIC_MIN_SCORE,
             "relative_label_threshold": SEMANTIC_RELATIVE_LABEL_THRESHOLD,
             "relation_probe_method": RELATION_PROBE_METHOD,
+            "note_visibility": {
+                "method": NOTE_VISIBILITY_METHOD,
+                "note_content": "analysis_text (all stored fields)",
+                "request_scope": "all model requests for the same turn and speaker, including system prompts",
+                "aggregation": "maximum per-request containment",
+                "threshold": 0.72,
+            },
             "paired_bootstrap": {
                 "seed": SEMANTIC_BOOTSTRAP_SEED,
                 "resamples": SEMANTIC_BOOTSTRAP_RESAMPLES,
@@ -1066,10 +1089,12 @@ def semantic_report_markdown(result: dict) -> str:
         f"- Run id: {result['generation_identity']['run_id']}",
         f"- Model: {result['generation_identity']['llm'].get('model', '')}",
         f"- Method: {result['assessment_identity']['method']}",
+        f"- Note visibility: {result['assessment_identity']['note_visibility']['method']}",
         f"- Taxonomy: {taxonomy['id']}",
         f"- Documents: {result['corpus']['documents']} ({result['corpus']['utterances']} utterances, {result['corpus']['notes']} notes)",
         "",
         "This report uses frozen semantic prototypes plus character 2-4 gram TF-IDF. It is an auditable lexical-semantic measurement, not an LLM quality judgment.",
+        "Note visibility is an all-field lexical-containment proxy over each provider request, including post-action inputs. It is not proof of source attribution or understanding.",
         "",
         "## Frame Occupancy",
         "",

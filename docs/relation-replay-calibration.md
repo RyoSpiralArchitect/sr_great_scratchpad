@@ -1,5 +1,9 @@
 # Fixed-probe relation calibration
 
+Review follow-up: [PR 7 review resolution](pr7-review-resolution.md) corrects
+history-window isolation and visibility analysis. The results below remain
+frozen observations under their recorded runner, not a rerun of the fixes.
+
 ## Protocol frozen before live calls
 
 This follows the frozen-note calibration in `luna-selective-recall-mechanism.md`.

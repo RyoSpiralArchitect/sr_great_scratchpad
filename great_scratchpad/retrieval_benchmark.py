@@ -285,9 +285,9 @@ def benchmark_dialogue_retrieval(
                 ),
                 None,
             )
-            prompt = context["prompts"].get(
-                (target["turn"], target_document["speaker"]), ""
-            )
+            requests = context["requests"].get((target["turn"], target_document["speaker"]), [])
+            # Retrieval queries remain tied to the first request, before tool observations.
+            prompt = requests[0]["prompt"] if requests else ""
             if source_note is None:
                 skipped.append(
                     {
