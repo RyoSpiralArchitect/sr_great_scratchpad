@@ -107,3 +107,94 @@ directory. API shape follows the [official Mistral API documentation](https://do
 Each run stores `plan.json`, `result.json`, `responses.jsonl`, and `report.md`.
 The plan includes source-note text, source request, annotation evidence, frozen
 assessment, rank receipts, selected-note hashes, and every provider-visible prompt.
+
+## Calibration 1 results: 2026-09-27
+
+Implementation and protocol were committed as
+`1adcca2c406db46568c150c7cac4546e27640627` before either live run. Both profiles
+completed 12/12 cells, with no retries, parse failures, or tool calls. All 24
+replies fit the frozen 180-character limit. Their complete `plan.json` files are
+byte-identical across providers. An independent post-run check matched all
+responses to result messages, plan hashes, and runtime component hashes.
+
+| Model | Visibility | Rendering | Literal | Strict relation |
+|---|---|---|---:|---:|
+| Luna | top2 | original | 1/2 | 0/1 |
+| Luna | top2 | prose | 2/2 | 1/1 |
+| Luna | top2 | roles | 2/2 | 1/1 |
+| Luna | full-at-probe | original | 1/2 | 0/1 |
+| Luna | full-at-probe | prose | 2/2 | 1/1 |
+| Luna | full-at-probe | roles | 2/2 | 1/1 |
+| Mistral | top2 | original | 2/2 | 0/1 |
+| Mistral | top2 | prose | 2/2 | 0/1 |
+| Mistral | top2 | roles | 2/2 | 0/1 |
+| Mistral | full-at-probe | original | 2/2 | 0/1 |
+| Mistral | full-at-probe | prose | 2/2 | 0/1 |
+| Mistral | full-at-probe | roles | 2/2 | 0/1 |
+
+Every no-target call (`none` and `top1`, three repeated samples each) failed the
+strict relation endpoint for both models. Aggregate literal matches were Luna
+`none=2/6`, `top1=2/6`; Mistral `none=2/6`, `top1=3/6`. These are six term checks
+on three repeated identical prompts per visibility, not six independent trials.
+
+### Interpretation and limitations
+
+1. Luna's source-visible prose and roles both passed where original did not.
+   This supports testing explicit correction relations further in this cell;
+   it does not show a label-specific advantage over prose, or general efficacy.
+2. Mistral recovered both level terms in all six source-visible responses,
+   including the original control. Manual reading finds the intended species-to-
+   within-individual direction, but the frozen scorer recognizes only the exact
+   Japanese markers `変更前`/`補正前` and `変更後`/`補正後`. Mistral instead used
+   `当初`, `現在`, `修正後`, or a `から...へ` construction. All six have boundary
+   matches but empty before/after marker matches. Keep their original `0/1` scores;
+   do not interpret this as model incapacity, or retroactively broaden the metric.
+3. The uncertainty qualification did not survive in any of the eight
+   source-visible augmented answers (two providers, two visibility modes, two
+   augmented renderings). All describe species-level comparison as historical.
+   Inspection of turns 1-2 in both the donor and source replay confirms that
+   neither establishes that prior adoption. The strict endpoint can therefore
+   reward an unsupported temporal claim. A pass is not truthful memory recovery.
+4. Literal matching also misses paraphrases: Luna's no-memory prose sample uses
+   `クラゲ内部` rather than one of the frozen within-individual terms. Neither
+   lexical endpoint is a complete semantic or factual evaluator. Biological and
+   cultural claims in generated answers have not been fact-checked here.
+
+The next gate is an **offline assessment/ground-truth correction**, before n=4:
+separate the rejected alternative, accepted comparison unit, analogy boundary,
+and whether prior adoption is actually evidenced. Build independent positive,
+paraphrase, reversed-role, negation, and unsupported-history cases; keep these
+calibration answers as diagnostic examples, not a new held-out test. A future
+protocol should ask what was rejected/accepted without presupposing a historical
+change. Do not enable the augmented representation by default or claim the
+bottleneck is solved on these results.
+
+### Cost and receipts
+
+| Profile | Requested / returned model | Prompt tokens | Completion tokens | Total |
+|---|---|---:|---:|---:|
+| openai-5.6-luna | gpt-5.6-luna / gpt-5.6-luna | 23301 | 2605 | 25906 |
+| mistral-large | mistral-large-latest / mistral-large-latest | 24347 | 1362 | 25709 |
+
+Total: 24 calls, 47,648 prompt tokens, 3,967 completion tokens, 51,615 total
+tokens. Counts are provider-reported, not estimates. Luna used its existing low-
+reasoning profile; Mistral used temperature 0.2. The returned Mistral name is still
+an alias, not a resolved immutable model version. Credentials were loaded from
+the environment and are absent from the saved configuration and artifacts.
+
+Local artifacts live in `.great_scratchpad/runs/` under
+`luna-relation-replay-20260927-cal1` and `mistral-relation-replay-20260927-cal1`.
+These ignored run directories are not bundled into Git; the hashes below identify
+the retained local evidence, not a claim that a fresh clone contains the runs.
+
+| Artifact | SHA-256 |
+|---|---|
+| Both plans | `868035fb60731dcf4dd45d39ef7f18d34a6d16077d8afe9dbf71c88dc9dd5728` |
+| Luna result | `dc4ea0ba3ad2843ecbba0197fe640c7cffefc5483c7accef033904f34d5f4bdf` |
+| Luna raw responses | `28772c825907f0dccf65b3e027fa7488c7db81d47e8a1aaeaf69f1f2e56304f0` |
+| Mistral result | `b6a5925ac71f92d7511c4903714d96ae1420688946c0cddc56e7dcc31d9cabb0` |
+| Mistral raw responses | `676236c366f11a6cd748cac597bde99e2d8477719f8af8904805098810c4a5d0` |
+
+Validation: 60 unit tests, scoped Ruff, compilation, CLI help, existing live-run
+smoke with fake models, and diff whitespace checks passed. No additional paid
+replication or revised endpoint scoring was performed.

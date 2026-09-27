@@ -341,6 +341,8 @@ python3 -S sr_great_scratchpad.py experiment retrieval \
 
 reportは `intervention` とfull `current-message` queryを別々に、Recall@1/2/3/5、MRR、候補数、compact注入文字数とともに出します。n=8へのpost-hoc適用、Luna n=1 mechanism校正、frozen-note replayの実行結果は [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) にあります。replayは16/16 noteのbyte identityとtop-2/fullのsource可視性を確認しましたが、strict relationは全4条件で0/1でした。n=4の前に、訂正をold state、new state、comparison boundaryとして明示するrelation-preserving note表現を校正する境界です。
 
+その後の [`relation-replay` 校正](docs/relation-replay-calibration.md) では、同じ遅延確認入力を固定し、元メモ・関係を補った文章・役割ラベルをLunaと `mistral-large-latest` で各12回比較しました。Lunaでは文章とラベルの両方がstrict endpointを改善しましたが、Mistralの言い換えを採点が取りこぼすことと、両モデルが未確認の過去を断定する問題も判明しています。通常動作への採用はせず、次は評価基準と正解の前提を修正する段階です。
+
 凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
 
 ```bash
@@ -692,6 +694,8 @@ python3 -S sr_great_scratchpad.py experiment retrieval \
 ```
 
 The report separates intervention-only and full-current-message queries, own-thread and hard-distractor scopes, Recall@1/2/3/5, MRR, candidate counts, and compact injection characters. See [`docs/luna-selective-recall-mechanism.md`](docs/luna-selective-recall-mechanism.md) for the post-hoc n=8 analysis, Luna n=1 mechanism calibration, and frozen-note replay result. Replay verified byte identity for all 16 applied notes and source visibility under top-2/full, but every condition scored 0/1 on the strict relation probe. The next boundary before n=4 is a relation-preserving note representation with explicit old state, new state, and comparison boundary roles.
+
+The subsequent [`relation-replay` calibration](docs/relation-replay-calibration.md) fixes one probe input and compares original notes, sourced relation prose, and role labels in 12 calls each to Luna and `mistral-large-latest`. Prose and labels both improved Luna's strict endpoint, but the run also exposed missed Mistral paraphrases and unsupported historical claims by both models. The opt-in renderer is not adopted for normal chat; ground truth and assessment need correction before replication.
 
 Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
 
