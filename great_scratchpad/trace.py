@@ -140,6 +140,13 @@ def trace_report_data(events: list[dict]) -> dict:
             if isinstance(event.get("llm"), dict) and event.get("llm", {}).get("profile")
         }
     )
+    adapters = sorted(
+        {
+            str(event.get("llm", {}).get("adapter", ""))
+            for event in events
+            if isinstance(event.get("llm"), dict) and event.get("llm", {}).get("adapter")
+        }
+    )
     models = sorted(
         {
             str(event.get("llm", {}).get("model", "") or event.get("llm", {}).get("model_path", ""))
@@ -165,6 +172,7 @@ def trace_report_data(events: list[dict]) -> dict:
     return {
         "run_ids": run_ids,
         "profiles": profiles,
+        "adapters": adapters,
         "models": models,
         "summary": summary,
         "actions": actions,
@@ -235,6 +243,7 @@ def trace_report_markdown(events: list[dict], title: str = "Great Scratchpad Tra
         "",
         f"- Run ids: {', '.join(data['run_ids']) or '(none)'}",
         f"- Profiles: {', '.join(data['profiles']) or '(none)'}",
+        f"- Adapters: {', '.join(data['adapters']) or '(none)'}",
         f"- Models: {', '.join(data['models']) or '(none)'}",
         f"- Events: {sum(data['summary']['event_counts'].values())}",
         f"- JSON repairs: {data['json_repairs']}",

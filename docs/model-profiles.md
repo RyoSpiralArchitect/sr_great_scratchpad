@@ -1,17 +1,59 @@
 # Model profile examples
 
-Great Scratchpad can use either an OpenAI-compatible HTTP API profile or a
-local command profile. API profiles are usually easier to observe because
-provider usage can be captured in chat traces. Command profiles are useful when
-you want the simplest possible local process.
+Great Scratchpad can use either an OpenAI API profile, an OpenAI-compatible
+HTTP profile, or a local command profile. API profiles are usually easier to
+observe because provider usage can be captured in chat traces. Command profiles
+are useful when you want the simplest possible local process.
 
 The chat runtime expects the model to return JSON objects. Use low temperature
 for early experiments and keep `--json-repair-steps` enabled while comparing
 models.
 
+## OpenAI profiles
+
+Use `llm-config openai` for the OpenAI API. These profiles store
+`backend=openai` and `adapter=auto`, so GPT-5.x / GPT-5.6 models use the
+Responses API while older models can still be routed by adapter rules.
+
+### GPT-5.6 Luna
+
+```bash
+export OPENAI_API_KEY="..."
+
+python3 -S sr_great_scratchpad.py llm-config openai \
+  --profile openai-5.6-luna \
+  --model "gpt-5.6-luna" \
+  --reasoning-effort medium \
+  --json-mode json_object \
+  --default
+```
+
+### GPT-5.6 Terra or Sol
+
+Swap the model and profile names to test higher-capability tiers:
+
+```bash
+python3 -S sr_great_scratchpad.py llm-config openai \
+  --profile openai-5.6-terra \
+  --model "gpt-5.6-terra" \
+  --reasoning-effort medium
+
+python3 -S sr_great_scratchpad.py llm-config openai \
+  --profile openai-5.6-sol \
+  --model "gpt-5.6-sol" \
+  --reasoning-effort high
+```
+
+Set `--reasoning-mode pro` for quality-first GPT-5.6 experiments. Keep it off
+for latency and cost baselines.
+
 ## OpenAI-compatible HTTP profiles
 
 ### Generic provider
+
+Generic provider profiles default to the Chat Completions adapter to preserve
+legacy behavior. Add `--adapter auto` or `--adapter responses` only when the
+provider supports the Responses API shape.
 
 ```bash
 export PROVIDER_API_KEY="..."
@@ -209,6 +251,31 @@ python3 -S sr_great_scratchpad.py review edit monday-meawness ITEM_ID.json \
 python3 -S sr_great_scratchpad.py review apply monday-meawness ITEM_ID.json
 python3 -S sr_great_scratchpad.py review reject monday-meawness ITEM_ID.json
 ```
+
+Controlled raw/scratchpad dialogue matrix:
+
+```bash
+python3 -S sr_great_scratchpad.py experiment dialogue \
+  scenarios/luna_centerline_dialogue.json \
+  --profile openai-5.6-luna \
+  --turns 8 \
+  --turn-output-tokens 720 \
+  --max-api-calls 80 \
+  --max-suite-output-tokens 24000
+```
+
+The matrix disables JSON mode only for raw participants. Scratchpad participants
+keep the normal action/final JSON protocol and use an isolated writable
+workspace. The generated-token allowance is pooled across all model calls in
+one utterance, so a tool action consumes part of the same allowance as the
+final reply. `raw/scratchpad` is mirrored by default to expose speaker-position
+effects. Use `--no-mirror-mixed` only for a cheaper, explicitly confounded
+pilot.
+
+The preflight call cap uses the worst case: one call for a raw utterance and
+`1 + max_steps + json_repair_steps` for a scratchpad utterance. Reports retain
+actual input/output usage separately, since scratchpad prompt overhead is an
+observed treatment cost rather than something silently normalized away.
 
 References:
 

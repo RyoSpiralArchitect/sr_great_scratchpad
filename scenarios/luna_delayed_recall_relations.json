@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "id": "delayed-correction-relation-v1",
+  "fixture_sha256": "c5c72e87815b843d5619aa2e25c2fe1908011c0a1f85227adb0c510b697b125f",
+  "scenario_sha256": "97b923b484abb6ff991c7957e141e34206aa5b5ddc28c3ccabaeefbaf37354dc",
+  "annotations": [
+    {
+      "fixture_entry_id": "turn-03-level-correction",
+      "note_sha256": "3731aa12bb94f4acfc56c6ec1077a92d1c6cbca8dfeddd48031160c8cc7f3956",
+      "before_status": "rejected_interpretation",
+      "prior_adoption": "unverified",
+      "before_state": {
+        "value": "種間差",
+        "evidence": {
+          "kind": "note",
+          "entry_id": "turn-03-level-correction",
+          "field": "anchors",
+          "quote": "種間差ではなく個体内の異質性"
+        }
+      },
+      "after_state": {
+        "value": "個体内の神経細胞型・役割・局所回路の異質性",
+        "evidence": {
+          "kind": "note",
+          "entry_id": "turn-03-level-correction",
+          "field": "text",
+          "quote": "比較単位はクラゲ個体内の神経細胞型・役割・局所回路の異質性。"
+        }
+      },
+      "comparison_boundary": {
+        "value": "似ている構造と、比較できない尺度を区別する。",
+        "evidence": {
+          "kind": "scenario",
+          "field": "agenda",
+          "quote": "似ている構造と、比較できない尺度を区別する。"
+        }
+      }
+    }
+  ]
+}

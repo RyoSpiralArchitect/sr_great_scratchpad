@@ -6,10 +6,11 @@ from .text import limit_text
 
 CHECKPOINT_CUES = (
     "結局",
-    "つまり",
     "なんなん",
     "なんだろう",
     "まとめ",
+    "チェックポイント",
+    "checkpoint",
     "so what",
     "where are we",
     "what does that mean",
@@ -17,6 +18,7 @@ CHECKPOINT_CUES = (
 SHIFT_CUES = (
     "ところで",
     "そういえば",
+    "脱線",
     "by the way",
     "btw",
     "speaking of",
@@ -25,6 +27,8 @@ CORRECTION_CUES = (
     "そうじゃなく",
     "じゃなくて",
     "違った",
+    "補正",
+    "訂正",
     "でもそれをいうなら",
     "not exactly",
     "rather",
@@ -124,7 +128,7 @@ def analyze_centerline(user_text: str, history: list[dict[str, str]]) -> dict:
 
     should_checkpoint = checkpoint or (correction and analogy)
     should_clarify = ambiguous_short_question
-    should_queue_note = correction or (shift and analogy) or checkpoint
+    should_queue_note = correction or shift or checkpoint
 
     guidance: list[str] = []
     if should_checkpoint:
@@ -136,7 +140,7 @@ def analyze_centerline(user_text: str, history: list[dict[str, str]]) -> dict:
     if shift:
         guidance.append("Name the pivot if it changes the center pin.")
     if should_queue_note:
-        guidance.append("Under writer policy, consider scratchpad.add_note for this externally visible trajectory moment.")
+        guidance.append("Under writer policy, call scratchpad.add_note once before the final answer for this externally visible trajectory moment.")
 
     terms = _extract_terms(text)
     active_centers = infer_active_centers(history, text)
