@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 
 from .audit import audit_turn_md, audit_turn_values
+from .relations import render_memory_with_relations
 from .storage import ensure_root, ensure_thread, load_meta, now_iso, safe_id, save_meta
 from .text import auto_keys, build_turn_md, first_heading, iter_markdown_files, limit_text, parse_section, score_doc, score_doc_details, snippet
 
@@ -546,17 +547,25 @@ def render_search_results(tdir: Path, query: str, top: int = 5, width: int = 420
         )
     return "\n".join(out).strip()
 
-def render_recent_turns(tdir: Path, n: int = 5, max_chars: int = 1600) -> str:
+def render_recent_turns(
+    tdir: Path,
+    n: int = 5,
+    max_chars: int = 1600,
+    *,
+    relations: dict[str, dict] | None = None,
+    rendering: str = "original",
+) -> str:
     files = recent_turn_files(tdir, n)
     if not files:
         return "(no recent turns)"
 
     out: list[str] = []
     for path in files:
+        text = path.read_text(encoding="utf-8")
         out.extend(
             [
                 f"--- {path.relative_to(tdir)} ---",
-                limit_text(path.read_text(encoding="utf-8"), max_chars),
+                render_memory_with_relations(text, text, max_chars, relations, rendering),
                 "",
             ]
         )
@@ -586,6 +595,9 @@ def render_retrieved_turns(
     query: str,
     top: int = 1,
     max_chars_per_doc: int = 700,
+    *,
+    relations: dict[str, dict] | None = None,
+    rendering: str = "original",
 ) -> tuple[str, list[dict]]:
     if top < 1 or not query.strip():
         return "(no retrieved turns)", []
@@ -598,6 +610,9 @@ def render_retrieved_turns(
     sources: list[dict] = []
     for score, path, text in hits:
         compact = compact_memory_text(text, max_chars=max_chars_per_doc)
+        compact = render_memory_with_relations(
+            text, compact, max_chars_per_doc, relations, rendering
+        )
         relative_path = str(path.relative_to(tdir))
         out.extend(
             [

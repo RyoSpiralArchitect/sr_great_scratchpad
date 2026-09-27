@@ -14,6 +14,7 @@ from .experiments import add_run_id, default_manifest_path, make_run_id, run_sce
 from .llm import call_llm_result, draft_annotation, extract_json_object, llm_config_metadata, print_annotation
 from .memory import add_turn, apply_review_item, apply_safe_review_items, audit_review_item, build_context_pack, compact_one_range, edit_review_item, iter_review_items, load_review_item, recent_turn_files, reject_review_item, render_audit, render_recent_turns, render_review_item, retrieve, review_item_is_safe
 from .retrieval_benchmark import benchmark_dialogue_retrieval
+from .relation_replay import run_relation_replay
 from .semantics import analyze_dialogue_semantics
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
@@ -747,6 +748,22 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     root = root_path(args)
     ensure_root(root)
 
+    if args.experiment_cmd == "relation-replay":
+        result = run_relation_replay(
+            root=root, run_dir=Path(args.run_dir), session_id=args.session,
+            probe_turn=args.probe_turn, fixture_path=Path(args.fixture),
+            relations_path=Path(args.relations), profile=args.profile,
+            llm_config=args.llm_config, out_dir=Path(args.out_dir),
+            max_api_calls=args.max_api_calls,
+            max_suite_output_tokens=args.max_suite_output_tokens,
+            call_output_tokens=args.call_output_tokens, dry_run=args.dry_run,
+        )
+        print(f"Wrote relation replay report: {result['report_path']}")
+        print(f"status={result['status']} calls={result['attempted_calls']}")
+        if result["status"] == "error":
+            raise SystemExit(1)
+        return
+
     if args.experiment_cmd == "run":
         profiles = [part.strip() for part in args.profiles.split(",") if part.strip()]
         if not profiles:
@@ -1400,6 +1417,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("experiment", help="Run repeatable scratchpad scenarios across profiles.")
     experiment_sub = sp.add_subparsers(dest="experiment_cmd", required=True)
+
+    sp2 = experiment_sub.add_parser("relation-replay", help="Compare memory representations at one frozen probe.")
+    sp2.add_argument("run_dir", help="Completed frozen-note dialogue run.")
+    sp2.add_argument("--session", default="replay-no-recall-r01")
+    sp2.add_argument("--probe-turn", type=int, default=11)
+    sp2.add_argument("--fixture", required=True)
+    sp2.add_argument("--relations", required=True)
+    sp2.add_argument("--profile", required=True)
+    sp2.add_argument("--llm-config", default=None)
+    sp2.add_argument("--out-dir", required=True, help="Fresh artifact directory.")
+    sp2.add_argument("--max-api-calls", type=int, default=12)
+    sp2.add_argument("--max-suite-output-tokens", type=int, default=4800)
+    sp2.add_argument("--call-output-tokens", type=int, default=400)
+    sp2.add_argument("--dry-run", action="store_true", help="Freeze and validate all prompts without model calls.")
+    sp2.set_defaults(func=cmd_experiment)
 
     sp2 = experiment_sub.add_parser("run", help="Run a Markdown scenario across LLM profiles.")
     sp2.add_argument("scenario")
