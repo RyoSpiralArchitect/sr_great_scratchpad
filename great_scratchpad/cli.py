@@ -15,6 +15,7 @@ from .llm import call_llm_result, draft_annotation, extract_json_object, llm_con
 from .memory import add_turn, apply_review_item, apply_safe_review_items, audit_review_item, build_context_pack, compact_one_range, edit_review_item, iter_review_items, load_review_item, recent_turn_files, reject_review_item, render_audit, render_recent_turns, render_review_item, retrieve, review_item_is_safe
 from .retrieval_benchmark import benchmark_dialogue_retrieval
 from .relation_replay import run_relation_replay
+from .grounded_recall import prepare_grounded_recall, run_grounded_recall
 from .semantics import analyze_dialogue_semantics
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
@@ -748,6 +749,27 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     root = root_path(args)
     ensure_root(root)
 
+    if args.experiment_cmd in {"grounded-prepare", "grounded-run"}:
+        try:
+            if args.experiment_cmd == "grounded-prepare":
+                envelope = prepare_grounded_recall(
+                    root, Path(args.cases), [p.strip() for p in args.profiles.split(",") if p.strip()],
+                    Path(args.out_dir).expanduser(), args.llm_config, args.max_api_calls,
+                    args.max_suite_output_tokens,
+                )
+                print(f"Prepared 48 prompts without provider calls: {args.out_dir}")
+                print(f"plan_sha256={envelope['plan_sha256']}")
+            else:
+                result = run_grounded_recall(
+                    root, Path(args.plan_dir).expanduser(), args.plan_sha256, args.stage, args.llm_config,
+                )
+                print(f"status={result['status']} calls={result['attempted_calls']} gate_passed={result['gate_passed']}")
+                if result["status"] != "complete" or not result["gate_passed"]:
+                    raise SystemExit(1)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise SystemExit(f"Grounded recall stopped: {exc}") from exc
+        return
+
     if args.experiment_cmd == "relation-replay":
         result = run_relation_replay(
             root=root, run_dir=Path(args.run_dir), session_id=args.session,
@@ -1417,6 +1439,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("experiment", help="Run repeatable scratchpad scenarios across profiles.")
     experiment_sub = sp.add_subparsers(dest="experiment_cmd", required=True)
+
+    sp2 = experiment_sub.add_parser("grounded-prepare", help="Freeze all grounded-recall prompts and offline gates; no API calls.")
+    sp2.add_argument("--cases", required=True)
+    sp2.add_argument("--profiles", required=True, help="Exactly two comma-separated API profile names.")
+    sp2.add_argument("--llm-config", default=None)
+    sp2.add_argument("--out-dir", required=True, help="Fresh plan directory; never overwritten.")
+    sp2.add_argument("--max-api-calls", type=int, default=48)
+    sp2.add_argument("--max-suite-output-tokens", type=int, default=48000)
+    sp2.set_defaults(func=cmd_experiment)
+
+    sp2 = experiment_sub.add_parser("grounded-run", help="Execute a frozen calibration or gated confirmation stage.")
+    sp2.add_argument("--plan-dir", required=True)
+    sp2.add_argument("--plan-sha256", required=True, help="Digest printed by grounded-prepare.")
+    sp2.add_argument("--stage", choices=("calibration", "confirmation"), required=True)
+    sp2.add_argument("--llm-config", default=None)
+    sp2.set_defaults(func=cmd_experiment)
 
     sp2 = experiment_sub.add_parser("relation-replay", help="Compare memory representations at one frozen probe.")
     sp2.add_argument("run_dir", help="Completed frozen-note dialogue run.")

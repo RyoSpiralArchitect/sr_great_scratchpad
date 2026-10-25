@@ -345,6 +345,8 @@ reportは `intervention` とfull `current-message` queryを別々に、Recall@1/
 
 2026-09-28の[レビュー対応](docs/pr7-review-resolution.md)で、全条件の履歴窓とヒントの参照元を統一し、記憶の可視性を全呼び出し・全注釈欄から測るよう修正しました。旧ログの数値は保存していますが、修正済み実装による再実験とは区別しています。
 
+[Grounded recall v2](docs/grounded-recall-v2-protocol.md) は、退けた案・採用単位・比較の限界・過去の採用証拠を分けた、出典付きの構造化評価です。`experiment grounded-prepare` で全入力を固定し、`experiment grounded-run` で校正16回、合格時のみ確認32回を実行します。新しい合成記録を使う限定的な検証であり、自由文の意味理解や会話全体での改善を測るものではありません。
+
 凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
 
 ```bash
@@ -700,6 +702,8 @@ The report separates intervention-only and full-current-message queries, own-thr
 The subsequent [`relation-replay` calibration](docs/relation-replay-calibration.md) fixes one probe input and compares original notes, sourced relation prose, and role labels in 12 calls each to Luna and `mistral-large-latest`. Prose and labels both improved Luna's strict endpoint, but the run also exposed missed Mistral paraphrases and unsupported historical claims by both models. The opt-in renderer is not adopted for normal chat; ground truth and assessment need correction before replication.
 
 The [2026-09-28 review fixes](docs/pr7-review-resolution.md) equalize visible history across modes, bind hints to that window, and measure note exposure across all requests and stored fields. Historical receipts are preserved; re-analysis is not a fresh generation run under the corrected protocol.
+
+[Grounded recall v2](docs/grounded-recall-v2-protocol.md) separates rejected alternatives, accepted units, comparison boundaries and evidence of earlier adoption in a structured citation contract. `experiment grounded-prepare` freezes all inputs; `experiment grounded-run` executes 16 calibration calls and, only if all pass, 32 confirmation calls. These authored synthetic records test a narrow contract, not general free-text semantics or full-dialogue improvement.
 
 Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
 
