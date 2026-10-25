@@ -20,6 +20,12 @@ an explicit earlier adoption record and half leave earlier adoption unestablishe
 `n=4` means four distinct confirmation cases **per model/condition**, not four
 repetitions, four cases per historical-status stratum, or statistical validation.
 
+Post-calibration clarification (no gate/input change): the distinct-input claim
+applies to source-visible conditions. `none` removes all case-specific text,
+so its requests are repeated draws of an identical prompt. Case labels in the
+local manifest must not be mistaken for distinct no-source provider inputs.
+See the [result and failed gate](grounded-recall-v2-results.md).
+
 ## Ground truth and assessor
 
 - `rejected_alternative`: the option explicitly rejected by the correction.

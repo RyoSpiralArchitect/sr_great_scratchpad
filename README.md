@@ -347,6 +347,8 @@ reportは `intervention` とfull `current-message` queryを別々に、Recall@1/
 
 [Grounded recall v2](docs/grounded-recall-v2-protocol.md) は、退けた案・採用単位・比較の限界・過去の採用証拠を分けた、出典付きの構造化評価です。`experiment grounded-prepare` で全入力を固定し、`experiment grounded-run` で校正16回、合格時のみ確認32回を実行します。新しい合成記録を使う限定的な検証であり、自由文の意味理解や会話全体での改善を測るものではありません。
 
+[v2の校正結果](docs/grounded-recall-v2-results.md)は14/16で、出典あり12件は全件合格、Lunaの出典なし2件がnullの配置による形式不合格でした。未確認の過去の捏造とは区別し、事前ゲートに従ってn=4は実行していません。
+
 凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
 
 ```bash
@@ -704,6 +706,8 @@ The subsequent [`relation-replay` calibration](docs/relation-replay-calibration.
 The [2026-09-28 review fixes](docs/pr7-review-resolution.md) equalize visible history across modes, bind hints to that window, and measure note exposure across all requests and stored fields. Historical receipts are preserved; re-analysis is not a fresh generation run under the corrected protocol.
 
 [Grounded recall v2](docs/grounded-recall-v2-protocol.md) separates rejected alternatives, accepted units, comparison boundaries and evidence of earlier adoption in a structured citation contract. `experiment grounded-prepare` freezes all inputs; `experiment grounded-run` executes 16 calibration calls and, only if all pass, 32 confirmation calls. These authored synthetic records test a narrow contract, not general free-text semantics or full-dialogue improvement.
+
+[The v2 calibration](docs/grounded-recall-v2-results.md) passed 14/16: all 12 source-visible responses passed, while Luna's two no-source responses placed null at the wrong schema level. These were abstentions, not fabricated history. The frozen gate blocked n=4; no confirmation calls were made.
 
 Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
 

@@ -119,6 +119,14 @@ class GroundedAssessorTests(unittest.TestCase):
         answer["message"] = "以前は基板間比較を採用していた。"
         self.assertFalse(self.assess(answer)["schema_ok"])
 
+    def test_object_null_abstention_remains_schema_failure_in_frozen_v2(self):
+        answer = {role: {"value": None, "evidence": []} for role in ROLES}
+        answer["prior_adoption"] = {"status": "not_established", "evidence": []}
+        result = self.assess(answer, visible=False)
+        self.assertFalse(result["schema_ok"])
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["recovered_roles"], 0)
+
     def test_fixture_rejects_future_sources_and_nonhistorical_adoption(self):
         for mutation in ("future", "missing", "historical", "alias"):
             case = deepcopy(self.suite["cases"][1])
