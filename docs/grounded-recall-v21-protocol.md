@@ -90,3 +90,6 @@ by the v2.1 gate.
 
 This is the identity to commit before calling either provider. Live outcomes
 will be recorded separately, including a failed gate if one occurs.
+
+Completed outcomes are in the [v2.1 result](grounded-recall-v21-results.md);
+the frozen gate and source identities above were not changed after execution.
