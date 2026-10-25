@@ -16,6 +16,9 @@ from .memory import add_turn, apply_review_item, apply_safe_review_items, audit_
 from .retrieval_benchmark import benchmark_dialogue_retrieval
 from .relation_replay import run_relation_replay
 from .grounded_recall import prepare_grounded_recall, run_grounded_recall
+from .grounded_recall import build_plan as grounded_v2_plan
+from .grounded_recall_v21 import build_plan as grounded_v21_plan
+from .memory_task_design import design_memory_tasks
 from .semantics import analyze_dialogue_semantics
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
@@ -749,19 +752,31 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     root = root_path(args)
     ensure_root(root)
 
+    if args.experiment_cmd == "memory-task-design":
+        try:
+            spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+            envelope = design_memory_tasks(spec, Path(args.out_dir).expanduser())
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise SystemExit(f"Task design stopped: {exc}") from exc
+        print(f"Prepared {len(envelope['design']['cases'])} tasks; model difficulty NOT_MEASURED; API calls=0")
+        print(f"design_sha256={envelope['design_sha256']}")
+        return
+
     if args.experiment_cmd in {"grounded-prepare", "grounded-run"}:
         try:
+            plan_builder = grounded_v21_plan if args.contract == "v2.1" else grounded_v2_plan
             if args.experiment_cmd == "grounded-prepare":
                 envelope = prepare_grounded_recall(
                     root, Path(args.cases), [p.strip() for p in args.profiles.split(",") if p.strip()],
                     Path(args.out_dir).expanduser(), args.llm_config, args.max_api_calls,
-                    args.max_suite_output_tokens,
+                    args.max_suite_output_tokens, plan_builder=plan_builder,
                 )
                 print(f"Prepared 48 prompts without provider calls: {args.out_dir}")
                 print(f"plan_sha256={envelope['plan_sha256']}")
             else:
                 result = run_grounded_recall(
                     root, Path(args.plan_dir).expanduser(), args.plan_sha256, args.stage, args.llm_config,
+                    plan_builder=plan_builder,
                 )
                 print(f"status={result['status']} calls={result['attempted_calls']} gate_passed={result['gate_passed']}")
                 if result["status"] != "complete" or not result["gate_passed"]:
@@ -1440,7 +1455,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("experiment", help="Run repeatable scratchpad scenarios across profiles.")
     experiment_sub = sp.add_subparsers(dest="experiment_cmd", required=True)
 
+    sp2 = experiment_sub.add_parser("memory-task-design", help="Construct and audit a fixed task suite offline; no API calls.")
+    sp2.add_argument("--spec", required=True)
+    sp2.add_argument("--out-dir", required=True)
+    sp2.set_defaults(func=cmd_experiment)
+
     sp2 = experiment_sub.add_parser("grounded-prepare", help="Freeze all grounded-recall prompts and offline gates; no API calls.")
+    sp2.add_argument("--contract", choices=("v2", "v2.1"), default="v2")
     sp2.add_argument("--cases", required=True)
     sp2.add_argument("--profiles", required=True, help="Exactly two comma-separated API profile names.")
     sp2.add_argument("--llm-config", default=None)
@@ -1450,6 +1471,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp2.set_defaults(func=cmd_experiment)
 
     sp2 = experiment_sub.add_parser("grounded-run", help="Execute a frozen calibration or gated confirmation stage.")
+    sp2.add_argument("--contract", choices=("v2", "v2.1"), default="v2")
     sp2.add_argument("--plan-dir", required=True)
     sp2.add_argument("--plan-sha256", required=True, help="Digest printed by grounded-prepare.")
     sp2.add_argument("--stage", choices=("calibration", "confirmation"), required=True)

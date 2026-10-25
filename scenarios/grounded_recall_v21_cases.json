@@ -1,0 +1,394 @@
+{
+  "schema": "grounded-recall-cases-v2",
+  "calibration_contract": "v2.1",
+  "provenance": "Fresh authored calibration records; the four confirmation cases are byte-equivalent JSON values from the unqueried v2 confirmation partition.",
+  "cases": [
+    {
+      "id": "canal",
+      "stage": "calibration",
+      "probe_turn": 11,
+      "records": [
+        {
+          "source_id": "r1",
+          "turn": 1,
+          "text": "観察計画の相談を始めた。初回の比較単位については記録していない。"
+        },
+        {
+          "source_id": "r2",
+          "turn": 2,
+          "text": "比較案「運河どうしの流量差」は退ける。今回は「同じ運河内の分岐差」を比較単位として採用する。比較の範囲は「水路の分岐配置だけ」であり、流量変動の原因の同一性は主張しない。"
+        }
+      ],
+      "truth": {
+        "rejected_alternative": {
+          "value": "運河どうしの流量差",
+          "aliases": [
+            "運河間の流量の違い",
+            "異なる運河の流量差"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較案「運河どうしの流量差」は退ける。"
+            }
+          ]
+        },
+        "accepted_unit": {
+          "value": "同じ運河内の分岐差",
+          "aliases": [
+            "一つの運河の分岐間差異",
+            "同一運河にある分岐の違い"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "今回は「同じ運河内の分岐差」を比較単位として採用する。"
+            }
+          ]
+        },
+        "comparison_boundary": {
+          "value": "水路の分岐配置だけ",
+          "aliases": [
+            "水路の分岐形状に限定",
+            "水路の分岐という配置の範囲のみ"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較の範囲は「水路の分岐配置だけ」であり、流量変動の原因の同一性は主張しない。"
+            }
+          ]
+        },
+        "prior_adoption": {
+          "status": "not_established",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "sensor",
+      "stage": "calibration",
+      "probe_turn": 11,
+      "records": [
+        {
+          "source_id": "r1",
+          "turn": 1,
+          "text": "初回の判断では「装置どうしの測定差」を比較単位として採用した。"
+        },
+        {
+          "source_id": "r2",
+          "turn": 2,
+          "text": "比較案「装置どうしの測定差」は退ける。今回は「同じ装置内のセンサー差」を比較単位として採用する。比較の範囲は「検出点の配置だけ」であり、測定誤差の原因の同一性は主張しない。"
+        }
+      ],
+      "truth": {
+        "rejected_alternative": {
+          "value": "装置どうしの測定差",
+          "aliases": [
+            "装置間の測定の違い",
+            "異なる装置の測定差"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較案「装置どうしの測定差」は退ける。"
+            }
+          ]
+        },
+        "accepted_unit": {
+          "value": "同じ装置内のセンサー差",
+          "aliases": [
+            "一台の装置のセンサー間差異",
+            "同一装置にあるセンサーの違い"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "今回は「同じ装置内のセンサー差」を比較単位として採用する。"
+            }
+          ]
+        },
+        "comparison_boundary": {
+          "value": "検出点の配置だけ",
+          "aliases": [
+            "検出点の配置形状に限定",
+            "検出点という配置の範囲のみ"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較の範囲は「検出点の配置だけ」であり、測定誤差の原因の同一性は主張しない。"
+            }
+          ]
+        },
+        "prior_adoption": {
+          "status": "established",
+          "evidence": [
+            {
+              "source_id": "r1",
+              "quote": "初回の判断では「装置どうしの測定差」を比較単位として採用した。"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "station",
+      "stage": "confirmation",
+      "probe_turn": 11,
+      "records": [
+        {
+          "source_id": "r1",
+          "turn": 1,
+          "text": "駅の観察計画を相談した。初回の比較単位については記録していない。"
+        },
+        {
+          "source_id": "r2",
+          "turn": 2,
+          "text": "比較案「駅どうしの混雑差」は退ける。今回は「同じ駅内の改札差」を比較単位として採用する。比較の範囲は「通行経路の分岐形だけ」であり、混雑原因の同一性は主張しない。"
+        }
+      ],
+      "truth": {
+        "rejected_alternative": {
+          "value": "駅どうしの混雑差",
+          "aliases": [
+            "駅間の混雑の違い",
+            "異なる駅の混雑差"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較案「駅どうしの混雑差」は退ける。"
+            }
+          ]
+        },
+        "accepted_unit": {
+          "value": "同じ駅内の改札差",
+          "aliases": [
+            "一駅の改札間差異",
+            "同一駅にある改札の違い"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "今回は「同じ駅内の改札差」を比較単位として採用する。"
+            }
+          ]
+        },
+        "comparison_boundary": {
+          "value": "通行経路の分岐形だけ",
+          "aliases": [
+            "通行経路の分岐形状に限定",
+            "通行経路の分岐という形の範囲のみ"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較の範囲は「通行経路の分岐形だけ」であり、混雑原因の同一性は主張しない。"
+            }
+          ]
+        },
+        "prior_adoption": {
+          "status": "not_established",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "library",
+      "stage": "confirmation",
+      "probe_turn": 11,
+      "records": [
+        {
+          "source_id": "r1",
+          "turn": 1,
+          "text": "初回の判断では「図書館どうしの分類差」を比較単位として採用した。"
+        },
+        {
+          "source_id": "r2",
+          "turn": 2,
+          "text": "比較案「図書館どうしの分類差」は退ける。今回は「同じ図書館内の書架差」を比較単位として採用する。比較の範囲は「分類配置の隣接形だけ」であり、蔵書選定理由の同一性は主張しない。"
+        }
+      ],
+      "truth": {
+        "rejected_alternative": {
+          "value": "図書館どうしの分類差",
+          "aliases": [
+            "図書館間の分類の違い",
+            "異なる図書館の分類差"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較案「図書館どうしの分類差」は退ける。"
+            }
+          ]
+        },
+        "accepted_unit": {
+          "value": "同じ図書館内の書架差",
+          "aliases": [
+            "一館の書架間差異",
+            "同一図書館にある書架の違い"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "今回は「同じ図書館内の書架差」を比較単位として採用する。"
+            }
+          ]
+        },
+        "comparison_boundary": {
+          "value": "分類配置の隣接形だけ",
+          "aliases": [
+            "分類配置の隣接形状に限定",
+            "分類配置の隣接という形の範囲のみ"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較の範囲は「分類配置の隣接形だけ」であり、蔵書選定理由の同一性は主張しない。"
+            }
+          ]
+        },
+        "prior_adoption": {
+          "status": "established",
+          "evidence": [
+            {
+              "source_id": "r1",
+              "quote": "初回の判断では「図書館どうしの分類差」を比較単位として採用した。"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "service",
+      "stage": "confirmation",
+      "probe_turn": 11,
+      "records": [
+        {
+          "source_id": "r1",
+          "turn": 1,
+          "text": "サービスの監視計画を相談した。初回の比較単位については記録していない。"
+        },
+        {
+          "source_id": "r2",
+          "turn": 2,
+          "text": "比較案「サービスどうしの遅延差」は退ける。今回は「同じサービス内の処理段階差」を比較単位として採用する。比較の範囲は「依存関係の接続形だけ」であり、障害原因の同一性は主張しない。"
+        }
+      ],
+      "truth": {
+        "rejected_alternative": {
+          "value": "サービスどうしの遅延差",
+          "aliases": [
+            "サービス間の遅延の違い",
+            "異なるサービスの遅延差"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較案「サービスどうしの遅延差」は退ける。"
+            }
+          ]
+        },
+        "accepted_unit": {
+          "value": "同じサービス内の処理段階差",
+          "aliases": [
+            "一サービスの処理段階間差異",
+            "同一サービスにある処理段階の違い"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "今回は「同じサービス内の処理段階差」を比較単位として採用する。"
+            }
+          ]
+        },
+        "comparison_boundary": {
+          "value": "依存関係の接続形だけ",
+          "aliases": [
+            "依存関係の接続形状に限定",
+            "依存関係の接続という形の範囲のみ"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較の範囲は「依存関係の接続形だけ」であり、障害原因の同一性は主張しない。"
+            }
+          ]
+        },
+        "prior_adoption": {
+          "status": "not_established",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "tile",
+      "stage": "confirmation",
+      "probe_turn": 11,
+      "records": [
+        {
+          "source_id": "r1",
+          "turn": 1,
+          "text": "初回の判断では「タイルどうしの吸水差」を比較単位として採用した。"
+        },
+        {
+          "source_id": "r2",
+          "turn": 2,
+          "text": "比較案「タイルどうしの吸水差」は退ける。今回は「同じタイル内の細孔差」を比較単位として採用する。比較の範囲は「空隙配置の形だけ」であり、焼成条件の同一性は主張しない。"
+        }
+      ],
+      "truth": {
+        "rejected_alternative": {
+          "value": "タイルどうしの吸水差",
+          "aliases": [
+            "タイル間の吸水の違い",
+            "異なるタイルの吸水差"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較案「タイルどうしの吸水差」は退ける。"
+            }
+          ]
+        },
+        "accepted_unit": {
+          "value": "同じタイル内の細孔差",
+          "aliases": [
+            "一枚のタイルの細孔間差異",
+            "同一タイルにある細孔の違い"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "今回は「同じタイル内の細孔差」を比較単位として採用する。"
+            }
+          ]
+        },
+        "comparison_boundary": {
+          "value": "空隙配置の形だけ",
+          "aliases": [
+            "空隙の配置形状に限定",
+            "空隙の配置という形の範囲のみ"
+          ],
+          "evidence": [
+            {
+              "source_id": "r2",
+              "quote": "比較の範囲は「空隙配置の形だけ」であり、焼成条件の同一性は主張しない。"
+            }
+          ]
+        },
+        "prior_adoption": {
+          "status": "established",
+          "evidence": [
+            {
+              "source_id": "r1",
+              "quote": "初回の判断では「タイルどうしの吸水差」を比較単位として採用した。"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

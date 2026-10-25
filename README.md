@@ -349,6 +349,8 @@ reportは `intervention` とfull `current-message` queryを別々に、Recall@1/
 
 [v2の校正結果](docs/grounded-recall-v2-results.md)は14/16で、出典あり12件は全件合格、Lunaの出典なし2件がnullの配置による形式不合格でした。未確認の過去の捏造とは区別し、事前ゲートに従ってn=4は実行していません。
 
+[v2.1の再校正](docs/grounded-recall-v21-protocol.md)は採点規則を変えず、保留出力の完全な例を追加し、新しい校正記録で確認します。[次の課題設計](docs/memory-task-design-v1.md)は、決定の更新・例外規則・多段参照を直近／遅延／干渉／情報不足で比較する36問です。`experiment memory-task-design` は実APIを呼ばず、既存検索器と履歴窓の根拠可視性だけを検査します。
+
 凍結済みrunの発話とnoteを、外部依存なしの文字n-gram TF-IDFと意味プロトタイプで測る:
 
 ```bash
@@ -708,6 +710,8 @@ The [2026-09-28 review fixes](docs/pr7-review-resolution.md) equalize visible hi
 [Grounded recall v2](docs/grounded-recall-v2-protocol.md) separates rejected alternatives, accepted units, comparison boundaries and evidence of earlier adoption in a structured citation contract. `experiment grounded-prepare` freezes all inputs; `experiment grounded-run` executes 16 calibration calls and, only if all pass, 32 confirmation calls. These authored synthetic records test a narrow contract, not general free-text semantics or full-dialogue improvement.
 
 [The v2 calibration](docs/grounded-recall-v2-results.md) passed 14/16: all 12 source-visible responses passed, while Luna's two no-source responses placed null at the wrong schema level. These were abstentions, not fabricated history. The frozen gate blocked n=4; no confirmation calls were made.
+
+[v2.1 recalibration](docs/grounded-recall-v21-protocol.md) clarifies the complete abstention example without changing the assessor, using fresh calibration records. The [next task design](docs/memory-task-design-v1.md) covers updates, scoped exceptions and multi-hop joins across recent, delayed, interfering and insufficient records. `experiment memory-task-design` constructs 36 cases and audits exposure using the existing ranker, with no provider calls or measured model-accuracy claim.
 
 Measure utterance and note semantics in a frozen run with dependency-free character n-gram TF-IDF and frozen semantic prototypes:
 

@@ -6,6 +6,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+from typing import Callable
 
 from .centerline import analyze_centerline, render_centerline_hints
 from .chat import build_chat_prompt, llm_trace
@@ -336,24 +337,26 @@ def build_plan(suite: dict, configs: list[dict]) -> dict:
 
 def prepare_grounded_recall(root: Path, cases_path: Path, profiles: list[str], out_dir: Path,
                             llm_config: str | None = None, max_api_calls: int = 48,
-                            max_output_tokens: int = 48000) -> dict:
+                            max_output_tokens: int = 48000, *,
+                            plan_builder: Callable[[dict, list[dict]], dict] = build_plan) -> dict:
     if MAX_CALLS > max_api_calls or MAX_CALLS * CALL_OUTPUT_TOKENS > max_output_tokens:
         raise ValueError("Frozen suite exceeds the authorized call or output-token budget.")
     suite = strict_json(cases_path.read_text(encoding="utf-8"))
-    plan = build_plan(suite, [load_llm_config(root, llm_config, profile) for profile in profiles])
+    plan = plan_builder(suite, [load_llm_config(root, llm_config, profile) for profile in profiles])
     envelope = {"plan_sha256": canonical_json_sha256(plan), "plan": plan}
     out_dir.mkdir(parents=True, exist_ok=False)
     write_manifest(out_dir / "plan.json", envelope)
     return envelope
 
 
-def load_plan(root: Path, plan_dir: Path, plan_sha256: str, llm_config: str | None = None) -> dict:
+def load_plan(root: Path, plan_dir: Path, plan_sha256: str, llm_config: str | None = None, *,
+              plan_builder: Callable[[dict, list[dict]], dict] = build_plan) -> dict:
     envelope = strict_json((plan_dir / "plan.json").read_text(encoding="utf-8"))
     plan = envelope["plan"]
     if envelope["plan_sha256"] != plan_sha256 or canonical_json_sha256(plan) != plan_sha256:
         raise ValueError("Frozen plan digest mismatch.")
     configs = [load_llm_config(root, llm_config, cfg["profile"]) for cfg in plan["configs"]]
-    if build_plan(plan["suite"], configs) != plan:
+    if plan_builder(plan["suite"], configs) != plan:
         raise ValueError("Runtime, profile, prompts or offline gate differ from the frozen plan.")
     return plan
 
@@ -363,7 +366,7 @@ def audit_stage(plan: dict, plan_sha256: str, stage_dir: Path, stage: str) -> di
     result = strict_json((stage_dir / "result.json").read_text(encoding="utf-8"))
     planned = [cell for cell in plan["cells"] if cell["stage"] == stage]
     responses = [strict_json(line) for line in (stage_dir / "responses.jsonl").read_text(encoding="utf-8").splitlines()]
-    if (result["plan_sha256"] != plan_sha256 or result["stage"] != stage
+    if (result["plan_sha256"] != plan_sha256 or result["stage"] != stage or result["method"] != plan["method"]
             or result["status"] != "complete" or result["attempted_calls"] != len(planned)
             or len(result["cells"]) != len(planned) or len(responses) != len(planned)):
         raise ValueError("Incomplete or mismatched stage receipt.")
@@ -386,10 +389,11 @@ def audit_stage(plan: dict, plan_sha256: str, stage_dir: Path, stage: str) -> di
 
 
 def run_grounded_recall(root: Path, plan_dir: Path, plan_sha256: str, stage: str,
-                       llm_config: str | None = None) -> dict:
+                       llm_config: str | None = None, *,
+                       plan_builder: Callable[[dict, list[dict]], dict] = build_plan) -> dict:
     if stage not in STAGES:
         raise ValueError("Unknown experiment stage.")
-    plan = load_plan(root, plan_dir, plan_sha256, llm_config)
+    plan = load_plan(root, plan_dir, plan_sha256, llm_config, plan_builder=plan_builder)
     gate = None
     if stage == "confirmation":
         gate = audit_stage(plan, plan_sha256, plan_dir / "calibration", "calibration")
@@ -404,7 +408,7 @@ def run_grounded_recall(root: Path, plan_dir: Path, plan_sha256: str, stage: str
     planned = [cell for cell in plan["cells"] if cell["stage"] == stage]
     cases = {case["id"]: case for case in plan["suite"]["cases"]}
     result = {
-        "method": METHOD, "stage": stage, "plan_sha256": plan_sha256, "started_at": now_iso(),
+        "method": plan["method"], "stage": stage, "plan_sha256": plan_sha256, "started_at": now_iso(),
         "status": "running", "attempted_calls": 0, "gate_passed": False,
         "usage": empty_usage(), "calibration_gate": gate,
         "cells": [{"id": c["id"], "case_id": c["case_id"], "profile": c["profile"],
