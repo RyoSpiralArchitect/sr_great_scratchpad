@@ -80,6 +80,8 @@ configured `reasoning_effort`; other compatible providers keep their existing
 parameter names. Large 4 accepts `none` and `high`; the additional
 `mistral-large-4-high` profile uses high reasoning with a 4,096-token output
 allowance. Provider-accounted reasoning uses that allowance too.
+With high reasoning and temperature 0, the profile explicitly sets `top_p=1`
+to avoid the provider's non-greedy default.
 
 ```bash
 python3 -S sr_great_scratchpad.py chat YOUR_THREAD \

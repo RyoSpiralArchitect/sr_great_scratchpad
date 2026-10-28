@@ -26,7 +26,7 @@ PROTOCOLS = {METHOD: ("none", 600), "memory-reinjection-v1.2": ("high", 4096)}
 CONDITIONS = (*ORIGINAL_CONDITIONS[:3], "linked-retrieve", *ORIGINAL_CONDITIONS[3:])
 CONFIG_FIELDS = {
     "profile", "backend", "adapter", "base_url", "api_key_env", "model", "temperature",
-    "seed", "reasoning_effort", "json_mode", "max_tokens", "timeout",
+    "seed", "top_p", "reasoning_effort", "json_mode", "max_tokens", "timeout",
 }
 
 
@@ -54,6 +54,7 @@ def experiment_config(cfg: dict) -> dict:
             or cfg.get("api_key_env") != "MISTRAL_API_KEY" or cfg.get("temperature") != 0
             or cfg.get("seed") != 261028
             or (cfg.get("reasoning_effort"), cfg.get("max_tokens")) not in PROTOCOLS.values()
+            or (cfg.get("reasoning_effort") == "high" and cfg.get("top_p") != 1.0)
             or cfg.get("json_mode") != "json_object"
             or not cfg.get("profile")):
         raise ValueError("Use the explicit Mistral Large 4 calibration profile.")

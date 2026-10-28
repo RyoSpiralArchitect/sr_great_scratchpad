@@ -167,6 +167,8 @@ class ReinjectionPlanTests(unittest.TestCase):
         self.assertEqual(plan["budget"]["max_calls"], 174)
         self.assertEqual(plan["budget"]["max_output_tokens"], 712704)
         with self.assertRaises(ValueError):
+            experiment_config({k: v for k, v in high.items() if k != "top_p"})
+        with self.assertRaises(ValueError):
             experiment_config({**CFG, "reasoning_effort": "low", "max_tokens": 1200})
 
     def test_campaign_budget_rejected_before_plan_write(self):
