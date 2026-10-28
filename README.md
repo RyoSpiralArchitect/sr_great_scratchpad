@@ -729,6 +729,25 @@ Generation scenarios and assessment taxonomies retain separate SHA-256 identitie
 
 ### Live Run
 
+Mistral Large 4 and opt-in identifier-linked recall are available through
+[`examples/mistral-large-4.json`](examples/mistral-large-4.json) and
+`chat --recall-policy linked --recall-chars 1200`. See the
+[high-reasoning protocol](docs/mistral4-reinjection-v12-protocol.md) and
+[exploratory results](docs/mistral4-reinjection-results.md) for the active
+controls, pressure tiers, failure-preserving continuations, and remaining
+uncertainty/abstention problems.
+
+The fresh [evidence-state v2 protocol](docs/uncertainty-contract-v2-protocol.md)
+separates undetermined values from their supporting records and distinguishes
+unconfirmed flags from disabled ones. Its three-contract comparison retains the
+historical scores and leaves normal chat's wire protocol unchanged.
+V2's empty-source routing format failed calibration at 11/12; the
+[v2.1 revision](docs/uncertainty-contract-v21-protocol.md) adds complete examples
+and uses a disjoint cohort without loosening assessment.
+The [live calibration results](docs/uncertainty-contract-results.md) retain both
+failed gates: v2 at 11/12 and v2.1 at 10/12. All 24 value decisions were correct,
+but flag shapes and proof completeness prevented advancement to the pilot.
+
 Run the included smoke test:
 
 ```bash

@@ -11,6 +11,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 
 from .constants import ANNOTATION_FIELDS, ANNOTATION_PROMPT_TEMPLATE
 
@@ -378,6 +379,11 @@ def call_openai_compatible_result(cfg: dict, prompt: str, system_prompt: str = "
         ],
     }
     apply_sampling_params(body, cfg, max_token_field="max_tokens")
+    if urlparse(url).hostname == "api.mistral.ai":
+        if "seed" in body:
+            body["random_seed"] = body.pop("seed")
+        if cfg.get("reasoning_effort"):
+            body["reasoning_effort"] = str(cfg["reasoning_effort"])
     body.setdefault("temperature", float(cfg.get("temperature", 0.2)))
     body.setdefault("max_tokens", int(cfg.get("max_tokens", 900)))
     response_format = chat_response_format(cfg)
@@ -407,7 +413,12 @@ def call_openai_compatible_result(cfg: dict, prompt: str, system_prompt: str = "
         raise SystemExit(f"Provider API request failed: {exc}") from exc
 
     try:
-        content = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text")
+        if not isinstance(content, str):
+            raise TypeError("Expected text content.")
     except (KeyError, IndexError, TypeError) as exc:
         raise SystemExit(f"Provider API response did not look OpenAI-compatible: {data}") from exc
 
@@ -422,6 +433,9 @@ def call_openai_compatible_result(cfg: dict, prompt: str, system_prompt: str = "
         "request_model": body["model"],
         "url": url,
         "adapter": OPENAI_CHAT_ADAPTER,
+        "finish_reason": choice.get("finish_reason", ""),
+        "response_id": data.get("id", ""),
+        "request_params": {key: value for key, value in body.items() if key != "messages"},
     }
 
 def call_openai_compatible(cfg: dict, prompt: str, system_prompt: str = "") -> str:

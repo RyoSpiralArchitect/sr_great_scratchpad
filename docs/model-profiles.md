@@ -72,6 +72,28 @@ python3 -S sr_great_scratchpad.py llm-config provider \
   --default
 ```
 
+### Mistral Large 4
+
+The checked-in profile pins the requested model to `mistral-large-4` and reads
+`MISTRAL_API_KEY`. The adapter sends Mistral's `random_seed` field and the
+configured `reasoning_effort`; other compatible providers keep their existing
+parameter names. Large 4 accepts `none` and `high`; the additional
+`mistral-large-4-high` profile uses high reasoning with a 4,096-token output
+allowance. Provider-accounted reasoning uses that allowance too.
+With high reasoning and temperature 0, the profile explicitly sets `top_p=1`
+to avoid the provider's non-greedy default.
+
+```bash
+python3 -S sr_great_scratchpad.py chat YOUR_THREAD \
+  --llm-config examples/mistral-large-4.json --profile mistral-large-4-high \
+  --recall-policy linked --recall-chars 1200
+```
+
+The [exploratory result](mistral4-reinjection-results.md) compares linked recall
+with legacy retrieval and a budget-matched recency archive. It improved
+old-evidence recovery but retained failures in abstention formatting and
+unknown-flag reasoning. Automatic linked recall remains opt-in.
+
 ### Ollama
 
 Ollama documents OpenAI compatibility for `/v1/chat/completions`.

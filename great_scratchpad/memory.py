@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import uuid
 from pathlib import Path
 
@@ -24,6 +26,98 @@ def retrieve(tdir: Path, query: str, top: int) -> list[tuple[float, Path, str]]:
 
     hits.sort(key=lambda x: x[0], reverse=True)
     return hits[:top]
+
+
+def memory_identifiers(text: str) -> list[str]:
+    """Mixed letter/digit identifiers, in source order, without citation labels."""
+    text = re.sub(r"^\[[A-Za-z0-9_-]+\]\s*", "", text.strip())
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9_-]*", text)
+    return list(dict.fromkeys(t.lower() for t in tokens if len(t) >= 3 and any(c.isdigit() for c in t)))
+
+
+def retrieve_linked(
+    tdir: Path,
+    query: str,
+    top: int = 16,
+    *,
+    max_hops: int = 2,
+    per_hop: int = 4,
+    excluded: set[Path] | None = None,
+) -> tuple[list[tuple[float, Path, str]], list[dict]]:
+    """Follow public identifier mentions; do not infer which linked claims are true."""
+    if top < 1 or not query.strip() or not 0 <= max_hops <= 4 or per_hop < 1:
+        raise ValueError("Linked retrieval requires a query and positive bounded search limits.")
+    documents = []
+    for path in iter_markdown_files(tdir):
+        if excluded and path in excluded:
+            continue
+        text = path.read_text(encoding="utf-8")
+        raw = parse_section(text, "Raw articulation") or text
+        documents.append((path, text, raw, memory_identifiers(raw)))
+    roots = set(memory_identifiers(query))
+    frontier = set(roots)
+    visited = set(roots)
+    selected: set[Path] = set()
+    hits: list[tuple[float, Path, str]] = []
+    rounds: list[dict] = []
+    for hop in range(max_hops + 1):
+        ranked = []
+        for path, text, raw, identifiers in documents:
+            if path in selected:
+                continue
+            overlap = frontier.intersection(identifiers)
+            if roots and not overlap:
+                continue
+            lexical = score_doc(query, raw, Path(path.name)) / math.sqrt(max(1, len(raw)))
+            if not roots and lexical <= 0:
+                continue
+            subject_match = bool(identifiers and identifiers[0] in frontier)
+            ranked.append((subject_match, len(overlap), lexical, path, text, identifiers))
+        ranked.sort(key=lambda row: (-int(row[0]), -row[1], -row[2], str(row[3].relative_to(tdir))))
+        chosen = ranked[:min(per_hop if roots else top, top - len(hits))]
+        next_frontier: set[str] = set()
+        round_sources = []
+        for subject_match, overlap, lexical, path, text, identifiers in chosen:
+            selected.add(path)
+            hits.append((round(100 * int(subject_match) + 10 * overlap + lexical, 6), path, text))
+            next_frontier.update(identifiers)
+            round_sources.append({"path": str(path.relative_to(tdir)), "subject_match": subject_match})
+        rounds.append({"hop": hop, "query_identifiers": sorted(frontier), "sources": round_sources})
+        frontier = next_frontier - visited
+        visited.update(next_frontier)
+        if not frontier or not roots or len(hits) >= top:
+            break
+    # Spend spare payload budget on remaining query matches, after linked evidence.
+    remaining = []
+    for path, text, raw, identifiers in documents:
+        if path in selected:
+            continue
+        score = score_doc(query, raw, Path(path.name)) / math.sqrt(max(1, len(raw)))
+        if score > 0:
+            remaining.append((score, path, text))
+    remaining.sort(key=lambda row: (-row[0], str(row[1].relative_to(tdir))))
+    hits.extend(remaining[:top - len(hits)])
+    return hits, rounds
+
+
+def render_linked_turns(tdir: Path, query: str, max_chars: int = 1200) -> tuple[str, list[dict], list[dict]]:
+    if max_chars < 1:
+        raise ValueError("Recall character budget must be positive.")
+    hits, rounds = retrieve_linked(tdir, query)
+    chunks: list[str] = []
+    sources = []
+    fields = ("Raw articulation", "Center pin", "Trajectory", "Anchors", "Local assumptions", "Open questions", "Drift risks")
+    for score, path, text in hits:
+        values = [(name, parse_section(text, name)) for name in fields]
+        payload = "\n".join(f"{name}: {value}" for name, value in values if value and value not in {"(none)", "(not specified)"})
+        payload = payload or text
+        relative = str(path.relative_to(tdir))
+        chunk = f"--- {relative} ---\n{payload}"
+        if len("\n\n".join([*chunks, chunk])) > max_chars:
+            continue
+        chunks.append(chunk)
+        sources.append({"path": relative, "score": score, "source_chars": len(text), "injected_chars": len(chunk)})
+    return "\n\n".join(chunks) or "(no retrieved turns)", sources, rounds
 
 def add_turn(
     root: Path,
