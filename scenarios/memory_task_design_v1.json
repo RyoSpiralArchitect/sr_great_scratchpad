@@ -1,0 +1,16 @@
+{
+  "schema": "memory-task-design-v1",
+  "families": ["decision-update", "scoped-exception", "distributed-join"],
+  "regimes": ["recent", "delayed", "interference", "insufficient"],
+  "pilot_seeds": [260101],
+  "confirmation_seeds": [260201, 260202],
+  "history_chars": 700,
+  "memory_chars": 1200,
+  "retrieval_top": 4,
+  "distractor_records": 18,
+  "conditions": ["window-only", "archive-recent", "scratchpad-retrieve", "irrelevant-notes", "oracle-evidence", "full-history"],
+  "live_calls_authorized": 0,
+  "primary_contrast": "scratchpad-retrieve minus archive-recent on answerable delayed/interference cases",
+  "secondary_contrast": "scratchpad-retrieve minus window-only measures recovery of otherwise unavailable context, not scratchpad-specific superiority",
+  "selection_rule": "Keep every predeclared case, including retrieval failures, ties, easy controls and unanswerable controls. No selection by observed treatment gain."
+}
