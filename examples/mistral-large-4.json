@@ -1,0 +1,18 @@
+{
+  "default_profile": "mistral-large-4",
+  "profiles": {
+    "mistral-large-4": {
+      "backend": "openai-compatible",
+      "adapter": "chat-completions",
+      "base_url": "https://api.mistral.ai/v1",
+      "api_key_env": "MISTRAL_API_KEY",
+      "model": "mistral-large-4",
+      "temperature": 0.0,
+      "seed": 261028,
+      "reasoning_effort": "none",
+      "json_mode": "json_object",
+      "max_tokens": 600,
+      "timeout": 90
+    }
+  }
+}

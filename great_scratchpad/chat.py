@@ -8,7 +8,7 @@ import time
 from .centerline import analyze_centerline, render_centerline_hints
 from .constants import CHAT_PROMPT_TEMPLATE, chat_runtime_system
 from .llm import call_llm_result, completion_token_count, config_with_output_token_limit, extract_json_object, extract_json_object_with_metadata, llm_config_metadata
-from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_recent_turns, render_retrieved_turns, render_search_results
+from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_linked_turns, render_recent_turns, render_retrieved_turns, render_search_results
 from .storage import now_iso
 from .text import limit_text, limit_text_tail
 
@@ -240,10 +240,18 @@ def run_chat_turn(
     retrieval_top: int = 0,
     retrieval_max_chars: int = 700,
     history_context: str | None = None,
+    recall_policy: str = "recent",
+    recall_chars: int = 1200,
 ) -> str:
     observations: list[str] = []
     retrieval_sources: list[dict] = []
-    if retrieval_top > 0 and retrieval_query.strip():
+    retrieval_rounds: list[dict] = []
+    if recall_policy not in {"recent", "linked"}:
+        raise ValueError("Unknown recall policy.")
+    if recall_policy == "linked":
+        recent_context, retrieval_sources, retrieval_rounds = render_linked_turns(tdir, user_text, recall_chars)
+        memory_context_mode = "linked" if retrieval_sources else "retrieved-empty"
+    elif retrieval_top > 0 and retrieval_query.strip():
         recent_context, retrieval_sources = render_retrieved_turns(
             tdir,
             query=retrieval_query,
@@ -292,10 +300,13 @@ def run_chat_turn(
         recent_context_present=recent_context_present,
         recent_context_chars=len(recent_context),
         recent_context_sources=recent_context_sources,
-        retrieval_query=retrieval_query if retrieval_top > 0 else "",
+        retrieval_query=user_text if recall_policy == "linked" else retrieval_query if retrieval_top > 0 else "",
         retrieval_top=retrieval_top,
         retrieval_max_chars=retrieval_max_chars,
         retrieval_sources=retrieval_sources,
+        recall_policy=recall_policy,
+        recall_chars=recall_chars,
+        retrieval_rounds=retrieval_rounds,
         output_token_budget=output_token_budget,
         max_model_calls=max_model_calls,
         per_call_output_token_limit=per_call_output_token_limit,

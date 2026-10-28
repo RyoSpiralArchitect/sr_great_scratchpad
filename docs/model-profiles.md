@@ -72,6 +72,22 @@ python3 -S sr_great_scratchpad.py llm-config provider \
   --default
 ```
 
+### Mistral Large 4
+
+The checked-in profile pins the requested model to `mistral-large-4` and reads
+`MISTRAL_API_KEY`. The adapter sends Mistral's `random_seed` field and the
+configured `reasoning_effort`; other compatible providers keep their existing
+parameter names.
+
+```bash
+python3 -S sr_great_scratchpad.py chat YOUR_THREAD \
+  --llm-config examples/mistral-large-4.json --profile mistral-large-4 \
+  --recall-policy linked --recall-chars 1200
+```
+
+Use [the frozen reinjection pilot](mistral4-reinjection-protocol.md) to compare
+the linked reader against legacy retrieval and a budget-matched recency archive.
+
 ### Ollama
 
 Ollama documents OpenAI compatibility for `/v1/chat/completions`.

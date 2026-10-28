@@ -19,6 +19,7 @@ from .grounded_recall import prepare_grounded_recall, run_grounded_recall
 from .grounded_recall import build_plan as grounded_v2_plan
 from .grounded_recall_v21 import build_plan as grounded_v21_plan
 from .memory_task_design import design_memory_tasks
+from .reinjection import prepare_reinjection, run_reinjection, load_plan as load_reinjection_plan, audit_stage as audit_reinjection_stage, summarize_pilot
 from .semantics import analyze_dialogue_semantics
 from .storage import ensure_root, ensure_thread, ensure_thread_dirs, llm_config_path, load_llm_config, load_meta, now_iso, read_llm_config_document, read_text_arg, root_path, safe_id, save_meta, thread_path, write_llm_config_document
 from .text import limit_text, snippet
@@ -376,6 +377,8 @@ def cmd_pack(args: argparse.Namespace) -> None:
         print(output)
 
 def cmd_chat(args: argparse.Namespace) -> None:
+    if getattr(args, "recall_chars", 1200) < 1:
+        raise SystemExit("--recall-chars must be positive.")
     root = root_path(args)
     tdir = ensure_thread_dirs(root, args.thread, title=args.thread)
     thread_id = safe_id(args.thread)
@@ -403,6 +406,8 @@ def cmd_chat(args: argparse.Namespace) -> None:
                 "trace_path": str(trace_path) if trace_path else "",
                 "turns": turns,
                 "policy": args.policy,
+                "recall_policy": getattr(args, "recall_policy", "recent"),
+                "recall_chars": getattr(args, "recall_chars", 1200),
                 "llm": llm_config_metadata(cfg),
                 "summary": trace_summary(all_trace_events),
             },
@@ -428,6 +433,8 @@ def cmd_chat(args: argparse.Namespace) -> None:
                 json_repair_steps=args.json_repair_steps,
                 queue_writes=args.queue_writes,
                 policy=args.policy,
+                recall_policy=getattr(args, "recall_policy", "recent"),
+                recall_chars=getattr(args, "recall_chars", 1200),
             )
         except SystemExit as exc:
             turns += 1
@@ -751,6 +758,29 @@ def cmd_trace(args: argparse.Namespace) -> None:
 def cmd_experiment(args: argparse.Namespace) -> None:
     root = root_path(args)
     ensure_root(root)
+
+    if args.experiment_cmd in {"reinjection-prepare", "reinjection-run", "reinjection-report"}:
+        try:
+            out_dir = Path(args.out_dir).expanduser()
+            if args.experiment_cmd == "reinjection-prepare":
+                envelope = prepare_reinjection(root, Path(args.spec), args.llm_config, args.profile, out_dir,
+                                               args.max_api_calls, args.max_suite_output_tokens, args.max_input_bytes)
+                print(f"Prepared {envelope['plan']['budget']['max_calls']} prompts; API calls=0")
+                print(f"plan_sha256={envelope['plan_sha256']}")
+            elif args.experiment_cmd == "reinjection-run":
+                result = run_reinjection(root, out_dir, args.plan_sha256, args.llm_config, args.stage)
+                print(f"status={result['status']} calls={result['attempted_calls']} gate_passed={result['gate_passed']}")
+                if result["status"] != "complete" or not result["gate_passed"]:
+                    raise SystemExit(1)
+            else:
+                plan = load_reinjection_plan(root, out_dir, args.plan_sha256, args.llm_config)
+                result = audit_reinjection_stage(plan, args.plan_sha256, out_dir, "pilot")
+                report = summarize_pilot(plan, result)
+                write_manifest(out_dir / "summary.json", report)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise SystemExit(f"Reinjection stopped: {exc}") from exc
+        return
 
     if args.experiment_cmd == "memory-task-design":
         try:
@@ -1415,6 +1445,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--profile", default=None, help="LLM profile name.")
     sp.add_argument("--max-steps", type=int, default=4, help="Maximum scratchpad action steps per turn.")
     sp.add_argument("--recent", type=int, default=4, help="Recent scratchpad turns included in each prompt.")
+    sp.add_argument("--recall-policy", choices=("recent", "linked"), default="recent", help="Opt into identifier-linked, whole-note recall.")
+    sp.add_argument("--recall-chars", type=int, default=1200, help="Total linked recall characters, including source labels.")
     sp.add_argument("--max-tool-chars", type=int, default=6000, help="Maximum chars returned from each scratchpad action.")
     sp.add_argument("--yes", action="store_true", help="Allow runtime write actions without prompting.")
     sp.add_argument("--quiet", action="store_true", help="Do not print tool action progress.")
@@ -1454,6 +1486,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("experiment", help="Run repeatable scratchpad scenarios across profiles.")
     experiment_sub = sp.add_subparsers(dest="experiment_cmd", required=True)
+
+    for command in ("reinjection-prepare", "reinjection-run", "reinjection-report"):
+        sp2 = experiment_sub.add_parser(command, help="Prepare, execute or audit the frozen reinjection pilot.")
+        sp2.add_argument("--out-dir", required=True)
+        sp2.add_argument("--llm-config", default="examples/mistral-large-4.json")
+        if command == "reinjection-prepare":
+            sp2.add_argument("--spec", default="scenarios/mistral4_reinjection_v1.json")
+            sp2.add_argument("--profile", default="mistral-large-4")
+            sp2.add_argument("--max-api-calls", type=int, default=174)
+            sp2.add_argument("--max-suite-output-tokens", type=int, default=104400)
+            sp2.add_argument("--max-input-bytes", type=int, default=2000000)
+        else:
+            sp2.add_argument("--plan-sha256", required=True)
+        if command == "reinjection-run":
+            sp2.add_argument("--stage", choices=("calibration", "pilot"), required=True)
+        sp2.set_defaults(func=cmd_experiment)
 
     sp2 = experiment_sub.add_parser("memory-task-design", help="Construct and audit a fixed task suite offline; no API calls.")
     sp2.add_argument("--spec", required=True)
