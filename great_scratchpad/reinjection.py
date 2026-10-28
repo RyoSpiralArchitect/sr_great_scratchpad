@@ -22,6 +22,7 @@ from .semantics import paired_bootstrap_mean_interval
 from .storage import load_llm_config, now_iso
 
 METHOD = "memory-reinjection-v1"
+PROTOCOLS = {METHOD: ("none", 600), "memory-reinjection-v1.1": ("low", 1200)}
 CONDITIONS = (*ORIGINAL_CONDITIONS[:3], "linked-retrieve", *ORIGINAL_CONDITIONS[3:])
 CONFIG_FIELDS = {
     "profile", "backend", "adapter", "base_url", "api_key_env", "model", "temperature",
@@ -30,11 +31,13 @@ CONFIG_FIELDS = {
 
 
 def validate_spec(spec: dict) -> None:
-    expected = {"schema": METHOD, "families": list(FAMILIES), "regimes": list(REGIMES),
+    if spec.get("schema") not in PROTOCOLS:
+        raise ValueError("Unsupported reinjection protocol.")
+    expected = {"families": list(FAMILIES), "regimes": list(REGIMES),
                 "conditions": list(CONDITIONS), "archive_distractors": [18, 72],
                 "history_chars": 700, "memory_chars": 1200, "retrieval_top": 4,
                 "linked_top": 16, "linked_hops": 2, "linked_per_hop": 4,
-                "per_call_output_tokens": 600}
+                "per_call_output_tokens": PROTOCOLS[spec["schema"]][1]}
     if any(spec.get(k) != v for k, v in expected.items()):
         raise ValueError("Frozen reinjection arms, tiers or budgets changed; version the protocol.")
     seeds = [spec.get("calibration_seed"), spec.get("pilot_seed")]
@@ -49,8 +52,9 @@ def experiment_config(cfg: dict) -> dict:
     if (cfg.get("model") != "mistral-large-4" or cfg.get("base_url") != "https://api.mistral.ai/v1"
             or cfg.get("backend") != "openai-compatible" or cfg.get("adapter") != "chat-completions"
             or cfg.get("api_key_env") != "MISTRAL_API_KEY" or cfg.get("temperature") != 0
-            or cfg.get("seed") != 261028 or cfg.get("reasoning_effort") != "none"
-            or cfg.get("json_mode") != "json_object" or cfg.get("max_tokens") != 600
+            or cfg.get("seed") != 261028
+            or (cfg.get("reasoning_effort"), cfg.get("max_tokens")) not in PROTOCOLS.values()
+            or cfg.get("json_mode") != "json_object"
             or not cfg.get("profile")):
         raise ValueError("Use the explicit Mistral Large 4 calibration profile.")
     return dict(cfg)
@@ -87,6 +91,8 @@ def linked_condition(case: dict, spec: dict, archive: Path) -> dict:
 def build_plan(spec: dict, cfg: dict) -> dict:
     validate_spec(spec)
     cfg = experiment_config(cfg)
+    if (cfg["reasoning_effort"], cfg["max_tokens"]) != PROTOCOLS[spec["schema"]]:
+        raise ValueError("Profile must match this protocol's reasoning and output allowance.")
     cases, cells = [], []
 
     def cell(case: dict, row: dict, stage: str, **extra: object) -> dict:
@@ -129,10 +135,10 @@ def build_plan(spec: dict, cfg: dict) -> dict:
                     order = CONDITIONS[offset:] + CONDITIONS[:offset]
                     cells.extend(cell(case, by_arm[arm], "pilot", archive_distractors=pressure,
                                       condition_position=position + 1) for position, arm in enumerate(order))
-    return {"method": METHOD, "spec": spec, "config": cfg, "system_prompt": SYSTEM,
+    return {"method": spec["schema"], "spec": spec, "config": cfg, "system_prompt": SYSTEM,
             "cases": cases, "cells": cells, "runtime_sha256": runtime_hashes(),
-            "budget": {"max_calls": len(cells), "per_call_output_tokens": 600,
-                       "max_output_tokens": 600 * len(cells), "retries": 0,
+            "budget": {"max_calls": len(cells), "per_call_output_tokens": cfg["max_tokens"],
+                       "max_output_tokens": cfg["max_tokens"] * len(cells), "retries": 0,
                        "input_utf8_bytes": sum(c["input_utf8_bytes"] for c in cells),
                        "input_tokens_estimated": sum(c["input_tokens_estimated"] for c in cells)}}
 
@@ -213,7 +219,7 @@ def run_reinjection(root: Path, out_dir: Path, digest: str, config_path: str, st
     directory = out_dir / stage
     directory.mkdir(exist_ok=False)
     planned = [c for c in plan["cells"] if c["stage"] == stage]
-    result = {"method": METHOD, "stage": stage, "plan_sha256": digest, "started_at": now_iso(),
+    result = {"method": plan["method"], "stage": stage, "plan_sha256": digest, "started_at": now_iso(),
               "status": "running", "attempted_calls": 0, "gate_passed": False, "usage": empty_usage(),
               "cells": [{"id": c["id"], "status": "not-run"} for c in planned]}
 
@@ -287,5 +293,5 @@ def summarize_pilot(plan: dict, result: dict) -> dict:
             contrasts.append({"archive_distractors": pressure, "control": control, "pairs": pairs,
                               "mean_delta": sum(deltas) / len(deltas),
                               "bootstrap_95": paired_bootstrap_mean_interval(deltas), "outcomes": dict(outcomes)})
-    return {"method": METHOD, "scope": "Synthetic read-path pilot; tiers share task semantics, not independent replications.",
+    return {"method": plan["method"], "scope": "Synthetic read-path pilot; tiers share task semantics, not independent replications.",
             "conditions": summaries, "contrasts": contrasts, "usage": result["usage"]}

@@ -1,0 +1,19 @@
+{
+  "schema": "memory-reinjection-v1.1",
+  "calibration_seed": 26102810,
+  "pilot_seed": 26102811,
+  "archive_distractors": [18, 72],
+  "history_chars": 700,
+  "memory_chars": 1200,
+  "retrieval_top": 4,
+  "linked_top": 16,
+  "linked_hops": 2,
+  "linked_per_hop": 4,
+  "families": ["decision-update", "scoped-exception", "distributed-join"],
+  "regimes": ["recent", "delayed", "interference", "insufficient"],
+  "conditions": ["window-only", "archive-recent", "scratchpad-retrieve", "linked-retrieve", "irrelevant-notes", "oracle-evidence", "full-history"],
+  "per_call_output_tokens": 1200,
+  "primary_contrast": "linked-retrieve minus archive-recent grounded success on answerable delayed/interference cases, separately by archive tier",
+  "selection_rule": "Keep every cell. Both pressure tiers reuse task semantics. The failed v1 calibration is retained separately; v1.1 uses low reasoning and fresh cases without changing the assessor or retrieval policy.",
+  "gate": "All six fresh format/grounding calibration responses must pass; then run every pilot arm with no retries or substitutions."
+}

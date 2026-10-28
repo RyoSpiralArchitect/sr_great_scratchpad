@@ -13,6 +13,19 @@
       "json_mode": "json_object",
       "max_tokens": 600,
       "timeout": 90
+    },
+    "mistral-large-4-low": {
+      "backend": "openai-compatible",
+      "adapter": "chat-completions",
+      "base_url": "https://api.mistral.ai/v1",
+      "api_key_env": "MISTRAL_API_KEY",
+      "model": "mistral-large-4",
+      "temperature": 0.0,
+      "seed": 261028,
+      "reasoning_effort": "low",
+      "json_mode": "json_object",
+      "max_tokens": 1200,
+      "timeout": 90
     }
   }
 }

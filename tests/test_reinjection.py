@@ -155,6 +155,18 @@ class ReinjectionPlanTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 experiment_config({**CFG, **change})
 
+    def test_versioned_reasoning_profile_requires_matching_protocol(self):
+        spec = json.loads((REPO / "scenarios/mistral4_reinjection_v11.json").read_text())
+        low = experiment_config(load_llm_config(Path("."), CONFIG_PATH, "mistral-large-4-low"))
+        with self.assertRaises(ValueError):
+            build_plan(SPEC, low)
+        with self.assertRaises(ValueError):
+            build_plan(spec, CFG)
+        plan = build_plan(spec, low)
+        self.assertEqual(plan["method"], "memory-reinjection-v1.1")
+        self.assertEqual(plan["budget"]["max_calls"], 174)
+        self.assertEqual(plan["budget"]["max_output_tokens"], 208800)
+
     def test_campaign_budget_rejected_before_plan_write(self):
         with tempfile.TemporaryDirectory() as temporary:
             for limits in ({"max_calls": 173}, {"max_output": 104399}, {"max_input_bytes": 1}):
