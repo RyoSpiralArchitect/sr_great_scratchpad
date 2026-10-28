@@ -1,5 +1,9 @@
 # Mistral Large 4 reinjection pilot v1
 
+Historical initial protocol: calibration finished 5/6 and its pilot stayed
+blocked. Subsequent high-reasoning attempts and exploratory continuations are
+reported in [the full result](mistral4-reinjection-results.md).
+
 Frozen on 2026-10-28 before generation. This is a new read-path pilot using
 fresh synthetic decisions, scoped exceptions and distributed joins. Historical
 Luna and Mistral runs, assessors, and offline task-design v1 remain intact.
@@ -19,7 +23,9 @@ Negated claims, proposals and distractors remain original source text for the
 reader to interpret. No answer labels or typed reference events enter ranking.
 The ranker searches one thread and makes zero provider calls. Whole records
 are packed up to the same 1,200-character archive cap, skipping oversize
-records and already visible recent records. Public source IDs remain intact.
+records and already visible recent records in the benchmark wrapper. Public
+source IDs remain intact. Normal chat uses the current query without the
+benchmark's history-aware exclusion.
 
 The experiment compares this package of changes; it does not isolate the effect
 of graph traversal from budget filling or recent-record deduplication.

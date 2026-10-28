@@ -732,8 +732,10 @@ Generation scenarios and assessment taxonomies retain separate SHA-256 identitie
 Mistral Large 4 and opt-in identifier-linked recall are available through
 [`examples/mistral-large-4.json`](examples/mistral-large-4.json) and
 `chat --recall-policy linked --recall-chars 1200`. See the
-[frozen reinjection pilot](docs/mistral4-reinjection-protocol.md) for the
-calibration gate, active controls, pressure tiers, and bounded CLI experiment.
+[high-reasoning protocol](docs/mistral4-reinjection-v12-protocol.md) and
+[exploratory results](docs/mistral4-reinjection-results.md) for the active
+controls, pressure tiers, failure-preserving continuations, and remaining
+uncertainty/abstention problems.
 
 Run the included smoke test:
 

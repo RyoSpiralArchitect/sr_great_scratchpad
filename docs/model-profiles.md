@@ -85,12 +85,14 @@ to avoid the provider's non-greedy default.
 
 ```bash
 python3 -S sr_great_scratchpad.py chat YOUR_THREAD \
-  --llm-config examples/mistral-large-4.json --profile mistral-large-4 \
+  --llm-config examples/mistral-large-4.json --profile mistral-large-4-high \
   --recall-policy linked --recall-chars 1200
 ```
 
-Use [the frozen reinjection pilot](mistral4-reinjection-protocol.md) to compare
-the linked reader against legacy retrieval and a budget-matched recency archive.
+The [exploratory result](mistral4-reinjection-results.md) compares linked recall
+with legacy retrieval and a budget-matched recency archive. It improved
+old-evidence recovery but retained failures in abstention formatting and
+unknown-flag reasoning. Automatic linked recall remains opt-in.
 
 ### Ollama
 
