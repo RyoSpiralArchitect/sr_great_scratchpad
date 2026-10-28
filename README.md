@@ -744,6 +744,9 @@ historical scores and leaves normal chat's wire protocol unchanged.
 V2's empty-source routing format failed calibration at 11/12; the
 [v2.1 revision](docs/uncertainty-contract-v21-protocol.md) adds complete examples
 and uses a disjoint cohort without loosening assessment.
+The [live calibration results](docs/uncertainty-contract-results.md) retain both
+failed gates: v2 at 11/12 and v2.1 at 10/12. All 24 value decisions were correct,
+but flag shapes and proof completeness prevented advancement to the pilot.
 
 Run the included smoke test:
 
