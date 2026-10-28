@@ -22,7 +22,7 @@ from .semantics import paired_bootstrap_mean_interval
 from .storage import load_llm_config, now_iso
 
 METHOD = "memory-reinjection-v1"
-PROTOCOLS = {METHOD: ("none", 600), "memory-reinjection-v1.1": ("low", 1200)}
+PROTOCOLS = {METHOD: ("none", 600), "memory-reinjection-v1.2": ("high", 4096)}
 CONDITIONS = (*ORIGINAL_CONDITIONS[:3], "linked-retrieve", *ORIGINAL_CONDITIONS[3:])
 CONFIG_FIELDS = {
     "profile", "backend", "adapter", "base_url", "api_key_env", "model", "temperature",

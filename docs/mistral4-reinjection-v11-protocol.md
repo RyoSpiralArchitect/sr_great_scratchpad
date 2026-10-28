@@ -1,5 +1,10 @@
 # Mistral Large 4 reinjection pilot v1.1
 
+Historical protocol, not runnable. The first request returned HTTP 400:
+Large 4 supports only `none` and `high`, not `low`. No response was generated,
+and neither the rest of calibration nor the pilot ran. Preserve the plan and
+error receipt; continue only through the separate v1.2 protocol.
+
 Frozen on 2026-10-28 after v1 format/grounding calibration. v1 completed 6 calls,
 passed 5/6, and correctly blocked all 168 pilot calls. Its raw receipts and
 plan remain unchanged under `.great_scratchpad/runs/mistral4-reinjection-20261028/`.

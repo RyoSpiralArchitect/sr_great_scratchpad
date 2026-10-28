@@ -1,0 +1,19 @@
+{
+  "schema": "memory-reinjection-v1.2",
+  "calibration_seed": 26102820,
+  "pilot_seed": 26102821,
+  "archive_distractors": [18, 72],
+  "history_chars": 700,
+  "memory_chars": 1200,
+  "retrieval_top": 4,
+  "linked_top": 16,
+  "linked_hops": 2,
+  "linked_per_hop": 4,
+  "families": ["decision-update", "scoped-exception", "distributed-join"],
+  "regimes": ["recent", "delayed", "interference", "insufficient"],
+  "conditions": ["window-only", "archive-recent", "scratchpad-retrieve", "linked-retrieve", "irrelevant-notes", "oracle-evidence", "full-history"],
+  "per_call_output_tokens": 4096,
+  "primary_contrast": "linked-retrieve minus archive-recent grounded success on answerable delayed/interference cases, separately by archive tier",
+  "selection_rule": "Keep every cell. Retain v1 reader failure and v1.1 unsupported-parameter receipts. New high-reasoning cohort uses fresh seeds, unchanged assessor and unchanged retrieval policy.",
+  "gate": "All six fresh calibration responses must pass. On a genuine calibration failure stop the campaign; no pilot retries, repairs or substitutions."
+}

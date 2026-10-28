@@ -77,7 +77,9 @@ python3 -S sr_great_scratchpad.py llm-config provider \
 The checked-in profile pins the requested model to `mistral-large-4` and reads
 `MISTRAL_API_KEY`. The adapter sends Mistral's `random_seed` field and the
 configured `reasoning_effort`; other compatible providers keep their existing
-parameter names.
+parameter names. Large 4 accepts `none` and `high`; the additional
+`mistral-large-4-high` profile uses high reasoning with a 4,096-token output
+allowance. Provider-accounted reasoning uses that allowance too.
 
 ```bash
 python3 -S sr_great_scratchpad.py chat YOUR_THREAD \

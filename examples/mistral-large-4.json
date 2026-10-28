@@ -14,7 +14,7 @@
       "max_tokens": 600,
       "timeout": 90
     },
-    "mistral-large-4-low": {
+    "mistral-large-4-high": {
       "backend": "openai-compatible",
       "adapter": "chat-completions",
       "base_url": "https://api.mistral.ai/v1",
@@ -22,9 +22,9 @@
       "model": "mistral-large-4",
       "temperature": 0.0,
       "seed": 261028,
-      "reasoning_effort": "low",
+      "reasoning_effort": "high",
       "json_mode": "json_object",
-      "max_tokens": 1200,
+      "max_tokens": 4096,
       "timeout": 90
     }
   }
