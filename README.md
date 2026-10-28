@@ -737,6 +737,11 @@ Mistral Large 4 and opt-in identifier-linked recall are available through
 controls, pressure tiers, failure-preserving continuations, and remaining
 uncertainty/abstention problems.
 
+The fresh [evidence-state v2 protocol](docs/uncertainty-contract-v2-protocol.md)
+separates undetermined values from their supporting records and distinguishes
+unconfirmed flags from disabled ones. Its three-contract comparison retains the
+historical scores and leaves normal chat's wire protocol unchanged.
+
 Run the included smoke test:
 
 ```bash

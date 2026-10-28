@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Evidence-bearing uncertainty v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "value", "evidence", "flags"],
+  "properties": {
+    "status": {"enum": ["known", "unknown"]},
+    "value": {"type": ["string", "null"]},
+    "evidence": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "flags": {
+      "oneOf": [
+        {"type": "object", "maxProperties": 0},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["urgent", "hold"],
+          "properties": {
+            "urgent": {"enum": ["enabled", "disabled", "unknown", "unobserved"]},
+            "hold": {"enum": ["enabled", "disabled", "unknown", "unobserved"]}
+          }
+        }
+      ]
+    }
+  },
+  "if": {"properties": {"status": {"const": "known"}}},
+  "then": {"properties": {"value": {"type": "string", "pattern": "\\S"}}},
+  "else": {"properties": {"value": {"type": "null"}}}
+}
