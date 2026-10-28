@@ -741,6 +741,9 @@ The fresh [evidence-state v2 protocol](docs/uncertainty-contract-v2-protocol.md)
 separates undetermined values from their supporting records and distinguishes
 unconfirmed flags from disabled ones. Its three-contract comparison retains the
 historical scores and leaves normal chat's wire protocol unchanged.
+V2's empty-source routing format failed calibration at 11/12; the
+[v2.1 revision](docs/uncertainty-contract-v21-protocol.md) adds complete examples
+and uses a disjoint cohort without loosening assessment.
 
 Run the included smoke test:
 

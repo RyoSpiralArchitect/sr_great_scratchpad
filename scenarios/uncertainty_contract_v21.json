@@ -1,0 +1,20 @@
+{
+  "schema": "evidence-state-v2.1",
+  "calibration_seed": 26102841,
+  "pilot_seed": 26102851,
+  "calibration_cases": ["hold-unknown", "urgent-unknown", "hold-dominates", "urgent-enabled", "approved-update", "proposals-only", "complete-join", "pending-join", "base-route", "hold-unobserved"],
+  "pilot_cases": ["hold-unknown", "urgent-unknown", "hold-dominates", "urgent-enabled", "approved-update", "proposals-only", "complete-join", "pending-join"],
+  "conditions": ["window-only", "linked-retrieve", "full-history"],
+  "variants": ["legacy", "guarded-legacy", "evidence-state"],
+  "archive_distractors": 72,
+  "history_chars": 700,
+  "memory_chars": 1200,
+  "retrieval_top": 4,
+  "linked_top": 16,
+  "linked_hops": 2,
+  "linked_per_hop": 4,
+  "per_call_output_tokens": 4096,
+  "retries": 0,
+  "calibration_gate": "12/12 contract_success from audited raw receipts",
+  "failure_policy": "client errors and output limits fail once; continue remaining cells"
+}

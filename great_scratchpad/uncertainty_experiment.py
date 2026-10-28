@@ -32,6 +32,15 @@ SPEC = {"schema": METHOD, "calibration_seed": 26102840, "pilot_seed": 26102850,
         "per_call_output_tokens": 4096, "retries": 0,
         "calibration_gate": "12/12 contract_success from audited raw receipts",
         "failure_policy": "client errors and output limits fail once; continue remaining cells"}
+SPEC_V21 = {**SPEC, "schema": "evidence-state-v2.1", "calibration_seed": 26102841, "pilot_seed": 26102851}
+SYSTEMS_V21 = {**SYSTEMS, "evidence-state": SYSTEMS["evidence-state"] + """
+Complete empty-source routing example (the request itself is not supplied):
+{"status":"unknown","value":null,"evidence":[],
+ "flags":{"urgent":"unobserved","hold":"unobserved"}}
+The question still concerns routing even when no request record is supplied, so
+flags must NOT be {} in that case. In a non-routing task with no relevant records:
+{"status":"unknown","value":null,"evidence":[],"flags":{}}
+"""}
 METRICS = ("schema_ok", "value_correct", "epistemic_success", "contract_success", "recovered",
            "explicit_abstention", "unsupported_concrete", "unrecognized_value")
 
@@ -43,15 +52,16 @@ def request_params(cfg: dict) -> dict:
 
 
 def build_plan(spec: dict, cfg: dict) -> dict:
-    if spec != SPEC:
+    if spec not in (SPEC, SPEC_V21):
         raise ValueError("Frozen cases, contracts or budgets changed; version the protocol.")
     cfg = experiment_config(cfg)
     if cfg["reasoning_effort"] != "high" or cfg["max_tokens"] != 4096 or cfg.get("timeout") != 90:
         raise ValueError("Use the supported high-reasoning Mistral profile with a 90s timeout.")
     cases, cells = [], []
+    systems = SYSTEMS if spec == SPEC else SYSTEMS_V21
 
     def add_cell(case: dict, row: dict, variant: str, stage: str) -> None:
-        prompt, system = row["prompt"], SYSTEMS[variant]
+        prompt, system = row["prompt"], systems[variant]
         cells.append({**row, "id": f"{case['id']}:{row['condition']}:{variant}",
                       "case_id": case["id"], "scenario": case["scenario"], "family": case["family"],
                       "variant": variant, "stage": stage, "system_sha256": canonical_json_sha256(system),
@@ -93,7 +103,7 @@ def build_plan(spec: dict, cfg: dict) -> dict:
                     add_cell(case, selected[condition], variant, "pilot")
     if len(cells) != 84 or len({c["id"] for c in cells}) != 84:
         raise ValueError("Missing or repeated planned cells.")
-    return {"method": METHOD, "spec": spec, "config": cfg, "systems": SYSTEMS,
+    return {"method": spec["schema"], "spec": spec, "config": cfg, "systems": systems,
             "cases": cases, "cells": cells, "runtime_sha256": runtime_hashes(),
             "budget": {"max_calls": len(cells), "max_output_tokens": len(cells) * cfg["max_tokens"],
                        "input_utf8_bytes": sum(c["input_utf8_bytes"] for c in cells),
@@ -195,7 +205,7 @@ def run(out_dir: Path, digest: str, config_path: str, stage: str) -> dict:
     directory = out_dir / stage
     directory.mkdir(exist_ok=False)
     planned = [c for c in plan["cells"] if c["stage"] == stage]
-    result = {"method": METHOD, "stage": stage, "plan_sha256": digest, "started_at": now_iso(),
+    result = {"method": plan["method"], "stage": stage, "plan_sha256": digest, "started_at": now_iso(),
               "status": "running", "attempted_calls": 0, "all_contracts_passed": False,
               "known_usage": empty_usage(), "unavailable_usage_calls": 0, "cells": []}
 
@@ -284,7 +294,7 @@ def summarize(plan: dict, result: dict) -> dict:
                 outcomes["both" if a and b else "treatment_only" if b else "control_only" if a else "neither"] += 1
             contrasts.append({"condition": condition, "control": control, "treatment": treatment,
                               "paired_common_diagnostic": dict(outcomes)})
-    return {"method": METHOD, "scope": "Eight authored cases; paired contracts, not independent replications or a retrieval efficacy estimate.",
+    return {"method": plan["method"], "scope": "Eight authored cases; paired contracts, not independent replications or a retrieval efficacy estimate.",
             "groups": groups, "contrasts": contrasts, "known_usage": result["known_usage"],
             "unavailable_usage_calls": result["unavailable_usage_calls"]}
 

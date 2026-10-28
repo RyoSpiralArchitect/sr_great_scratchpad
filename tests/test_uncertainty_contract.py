@@ -15,7 +15,7 @@ from great_scratchpad.uncertainty_contract import (
     parse_answer, reference_state, routing_value,
 )
 from great_scratchpad.uncertainty_experiment import (
-    SPEC, assess_receipt, audit_stage, build_plan, load_plan, prepare, request_params, run, summarize,
+    SPEC, SPEC_V21, assess_receipt, audit_stage, build_plan, load_plan, prepare, request_params, run, summarize,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -224,6 +224,21 @@ class UncertaintyExperimentTests(unittest.TestCase):
             raw = json.dumps(answer_for(case, cell["visible_ids"]))
             self.assertTrue(assess_answer(raw, case, cell["prompt"], cell["variant"])["contract_success"])
 
+    def test_v21_only_clarifies_example_and_uses_fresh_cohort_same_assessor(self):
+        self.assertEqual(json.loads((REPO / "scenarios/uncertainty_contract_v21.json").read_text()), SPEC_V21)
+        revised = build_plan(SPEC_V21, CFG)
+        self.assertEqual(revised["method"], "evidence-state-v2.1")
+        self.assertEqual(len(revised["cells"]), 84)
+        self.assertEqual(revised["systems"]["legacy"], self.plan["systems"]["legacy"])
+        self.assertEqual(revised["systems"]["guarded-legacy"], self.plan["systems"]["guarded-legacy"])
+        self.assertTrue(revised["systems"]["evidence-state"].startswith(self.plan["systems"]["evidence-state"]))
+        self.assertFalse({c["seed"] for c in revised["cases"]} & {c["seed"] for c in self.plan["cases"]})
+        for cell in revised["cells"]:
+            if cell["variant"] == "evidence-state":
+                case = next(c for c in revised["cases"] if c["id"] == cell["case_id"])
+                raw = json.dumps(answer_for(case, cell["visible_ids"]))
+                self.assertTrue(assess_answer(raw, case, cell["prompt"], cell["variant"])["contract_success"])
+
     def test_gold_changes_cannot_select_retrieval(self):
         from great_scratchpad.memory_task_design import build_conditions
         case = make_state_case(101, "pending-join", "test")
@@ -316,6 +331,21 @@ class UncertaintyExperimentTests(unittest.TestCase):
         a = assess_receipt(self.plan, cell, receipt)
         self.assertTrue(a["schema_ok"])
         self.assertFalse(a["contract_success"])
+
+    def test_wrong_response_identity_stops_without_attempting_remaining_cells(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            out = Path(temporary)
+            plan, digest = self.fixture(out)
+            cell = plan["cells"][0]
+            response = self.provider(plan)(plan["config"], cell["prompt"], plan["systems"][cell["variant"]])
+            response["response_model"] = "substituted-model"
+            with patch("great_scratchpad.uncertainty_experiment.api_key_from_config", return_value="test-secret"), \
+                    patch("great_scratchpad.uncertainty_experiment.call_llm_result", return_value=response) as call:
+                result = run(out, digest, CONFIG, "calibration")
+                self.assertEqual(result["status"], "stopped-identity-mismatch")
+                self.assertEqual(call.call_count, 1)
+            with self.assertRaises(ValueError):
+                audit_stage(plan, digest, out, "calibration")
 
 
 if __name__ == "__main__":
