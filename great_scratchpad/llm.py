@@ -189,7 +189,7 @@ def normalize_adapter_name(name: str) -> str:
 
 def model_prefers_responses_api(model: str) -> bool:
     normalized = model.strip().lower()
-    return bool(re.match(r"^gpt-5(?:\.\d+)?(?:-|$)", normalized))
+    return bool(re.match(r"^gpt-(?:5|6)(?:\.\d+)?(?:-|$)", normalized))
 
 def resolve_llm_adapter(cfg: dict, strict: bool = True) -> str:
     explicit = str(cfg.get("adapter", "") or cfg.get("api", "")).strip().lower()
@@ -487,12 +487,16 @@ def call_openai_responses_result(cfg: dict, prompt: str, system_prompt: str = ""
     except urllib.error.URLError as exc:
         raise SystemExit(f"Responses API request failed: {exc}") from exc
 
-    content = extract_responses_text(data)
+    try:
+        content = extract_responses_text(data)
+    except SystemExit:
+        if data.get("status") not in {"incomplete", "failed", "cancelled"}:
+            raise
+        content = ""
+    usage_reported = bool(data.get("usage"))
     usage = normalize_responses_usage(
-        data.get("usage", {}),
-        compose_text_prompt(system_prompt, prompt),
-        str(content),
-    )
+        data.get("usage", {}), compose_text_prompt(system_prompt, prompt), str(content),
+    ) if usage_reported or content else {}
     return {
         "content": content,
         "usage": usage,
@@ -501,6 +505,11 @@ def call_openai_responses_result(cfg: dict, prompt: str, system_prompt: str = ""
         "response_id": data.get("id", ""),
         "url": url,
         "adapter": OPENAI_RESPONSES_ADAPTER,
+        "response_status": data.get("status", ""),
+        "incomplete_details": data.get("incomplete_details"),
+        "response_error": data.get("error"),
+        "usage_reported": usage_reported,
+        "request_params": {key: value for key, value in body.items() if key not in {"input", "instructions"}},
     }
 
 def call_command_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:

@@ -1,0 +1,17 @@
+{
+  "default_profile": "openai-6-luna",
+  "profiles": {
+    "openai-6-luna": {
+      "backend": "openai",
+      "adapter": "openai-responses",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "high",
+      "max_output_tokens": 4096,
+      "json_mode": "json_object",
+      "store": false,
+      "timeout": 90
+    }
+  }
+}

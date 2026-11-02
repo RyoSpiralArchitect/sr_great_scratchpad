@@ -748,6 +748,12 @@ The [live calibration results](docs/uncertainty-contract-results.md) retain both
 failed gates: v2 at 11/12 and v2.1 at 10/12. All 24 value decisions were correct,
 but flag shapes and proof completeness prevented advancement to the pilot.
 
+An opt-in [GPT-6 Luna profile](examples/gpt-6-luna.json) uses Responses with high
+reasoning and records incomplete-response status and usage. The
+[Luna comparison protocol](docs/luna-uncertainty-v3-protocol.md) replicates the
+previous 24 inputs and tests declared task kind and branch-specific proof
+instructions on a fresh four-arm calibration, without resuming a failed pilot.
+
 Run the included smoke test:
 
 ```bash

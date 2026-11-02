@@ -1,0 +1,16 @@
+{
+  "schema": "luna-evidence-state-v3",
+  "model": "gpt-6-luna",
+  "fresh_seed": 26110240,
+  "variants": ["generic", "task-kind", "proof", "task-kind+proof"],
+  "source_scenarios": ["hold-unknown", "urgent-unknown", "hold-dominates", "urgent-enabled", "approved-update", "proposals-only", "complete-join", "pending-join", "base-route", "hold-unobserved"],
+  "empty_scenarios": ["hold-unknown", "approved-update", "complete-join"],
+  "partial_scenarios": ["urgent-enabled", "complete-join"],
+  "replication_calls": 24,
+  "fresh_calls": 60,
+  "max_calls": 84,
+  "per_call_output_tokens": 4096,
+  "retries": 0,
+  "pilot_calls": 0,
+  "future_gate": "all 15 cases for an arm; no retrieval pilot authorized in this campaign"
+}
