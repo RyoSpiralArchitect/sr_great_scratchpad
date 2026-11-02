@@ -21,6 +21,14 @@ COMMAND_ADAPTER = "command"
 HUGGINGFACE_ADAPTER = "huggingface"
 
 
+class LLMResponseError(SystemExit):
+    """A received provider failure, retaining its identity and usage receipt."""
+
+    def __init__(self, result: dict):
+        self.result = result
+        super().__init__(f"Provider response failed: {result['response_failure']}.")
+
+
 def build_annotation_prompt(raw: str) -> str:
     return ANNOTATION_PROMPT_TEMPLATE.format(raw=raw.strip())
 
@@ -487,17 +495,21 @@ def call_openai_responses_result(cfg: dict, prompt: str, system_prompt: str = ""
     except urllib.error.URLError as exc:
         raise SystemExit(f"Responses API request failed: {exc}") from exc
 
+    output = data.get("output")
+    refusals = [part["refusal"] for item in (output if isinstance(output, list) else []) if isinstance(item, dict)
+                for part in (item.get("content") if isinstance(item.get("content"), list) else [])
+                if isinstance(part, dict) and part.get("type") == "refusal" and isinstance(part.get("refusal"), str)]
+    text_missing = False
     try:
         content = extract_responses_text(data)
     except SystemExit:
-        if data.get("status") not in {"incomplete", "failed", "cancelled"}:
-            raise
         content = ""
+        text_missing = True
     usage_reported = bool(data.get("usage"))
     usage = normalize_responses_usage(
         data.get("usage", {}), compose_text_prompt(system_prompt, prompt), str(content),
     ) if usage_reported or content else {}
-    return {
+    result = {
         "content": content,
         "usage": usage,
         "response_model": data.get("model", ""),
@@ -508,9 +520,22 @@ def call_openai_responses_result(cfg: dict, prompt: str, system_prompt: str = ""
         "response_status": data.get("status", ""),
         "incomplete_details": data.get("incomplete_details"),
         "response_error": data.get("error"),
+        "refusals": refusals,
+        "response_failure": None,
         "usage_reported": usage_reported,
         "request_params": {key: value for key, value in body.items() if key not in {"input", "instructions"}},
     }
+    if refusals:
+        result["response_failure"] = "refusal"
+    elif result["response_status"] and result["response_status"] != "completed":
+        result["response_failure"] = "provider-state"
+    elif result["response_error"]:
+        result["response_failure"] = "provider-error"
+    elif text_missing:
+        result["response_failure"] = "missing-text"
+    if result["response_failure"]:
+        raise LLMResponseError(result)
+    return result
 
 def call_command_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
     command = cfg.get("command")
@@ -670,16 +695,20 @@ def call_huggingface_result(cfg: dict, prompt: str, system_prompt: str = "") -> 
 def call_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
     started = time.perf_counter()
     adapter = resolve_llm_adapter(cfg)
-    if adapter == OPENAI_CHAT_ADAPTER:
-        result = call_openai_compatible_result(cfg, prompt, system_prompt)
-    elif adapter == OPENAI_RESPONSES_ADAPTER:
-        result = call_openai_responses_result(cfg, prompt, system_prompt)
-    elif adapter == COMMAND_ADAPTER:
-        result = call_command_llm_result(cfg, prompt, system_prompt)
-    elif adapter == HUGGINGFACE_ADAPTER:
-        result = call_huggingface_result(cfg, prompt, system_prompt)
-    else:
-        raise SystemExit(f"Unknown LLM adapter: {adapter!r}")
+    failure = None
+    try:
+        if adapter == OPENAI_CHAT_ADAPTER:
+            result = call_openai_compatible_result(cfg, prompt, system_prompt)
+        elif adapter == OPENAI_RESPONSES_ADAPTER:
+            result = call_openai_responses_result(cfg, prompt, system_prompt)
+        elif adapter == COMMAND_ADAPTER:
+            result = call_command_llm_result(cfg, prompt, system_prompt)
+        elif adapter == HUGGINGFACE_ADAPTER:
+            result = call_huggingface_result(cfg, prompt, system_prompt)
+        else:
+            raise SystemExit(f"Unknown LLM adapter: {adapter!r}")
+    except LLMResponseError as exc:
+        result, failure = exc.result, exc
 
     result.setdefault("usage", {})
     result.update(
@@ -694,6 +723,8 @@ def call_llm_result(cfg: dict, prompt: str, system_prompt: str = "") -> dict:
             "duration_ms": round((time.perf_counter() - started) * 1000, 3),
         }
     )
+    if failure is not None:
+        raise failure
     return result
 
 def call_llm(cfg: dict, prompt: str, system_prompt: str = "") -> str:

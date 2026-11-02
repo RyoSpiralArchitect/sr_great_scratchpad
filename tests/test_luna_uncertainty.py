@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from great_scratchpad.dialogue import canonical_json_sha256
 from great_scratchpad.experiments import write_manifest
-from great_scratchpad.llm import OPENAI_CHAT_ADAPTER, call_openai_responses_result, resolve_llm_adapter
+from great_scratchpad.llm import LLMResponseError, OPENAI_CHAT_ADAPTER, call_openai_responses_result, resolve_llm_adapter
 from great_scratchpad.luna_uncertainty import (
     CONFIG, PARENTS, SPEC, VARIANTS, assess, audit, build_plan, config, failure_tags,
     load_histories, load_plan, prepare, request_params, run, status, summarize,
@@ -61,11 +61,16 @@ class ResponsesReceiptTests(unittest.TestCase):
         self.assertEqual(resolve_llm_adapter(cfg), "openai-responses")
         self.assertEqual(resolve_llm_adapter({**cfg, "adapter": "chat-completions"}), OPENAI_CHAT_ADAPTER)
 
-    def call(self, payload):
+    def call(self, payload, received_failure=False):
         wire = io.BytesIO(json.dumps(payload).encode())
         with patch("great_scratchpad.llm.api_key_from_config", return_value="fake-key"), \
                 patch("great_scratchpad.llm.urllib.request.urlopen", return_value=wire) as post:
-            result = call_openai_responses_result(CONFIG, "test user prompt", "test system prompt")
+            if received_failure:
+                with self.assertRaises(LLMResponseError) as caught:
+                    call_openai_responses_result(CONFIG, "test user prompt", "test system prompt")
+                result = caught.exception.result
+            else:
+                result = call_openai_responses_result(CONFIG, "test user prompt", "test system prompt")
         sent = json.loads(post.call_args.args[0].data)
         return result, sent
 
@@ -85,7 +90,7 @@ class ResponsesReceiptTests(unittest.TestCase):
     def test_empty_output_limit_retains_known_reasoning_usage(self):
         result, _ = self.call({"id": "resp_limit", "status": "incomplete", "model": "gpt-6-luna",
                                "output": [], "incomplete_details": {"reason": "max_output_tokens"},
-                               "usage": {"input_tokens": 10, "output_tokens": 4096, "total_tokens": 4106}})
+                               "usage": {"input_tokens": 10, "output_tokens": 4096, "total_tokens": 4106}}, received_failure=True)
         self.assertEqual(result["content"], "")
         self.assertTrue(result["usage_reported"])
         self.assertEqual(result["usage"]["completion_tokens"], 4096)
@@ -93,7 +98,7 @@ class ResponsesReceiptTests(unittest.TestCase):
 
     def test_empty_incomplete_usage_is_unknown_not_estimated_zero(self):
         result, _ = self.call({"status": "incomplete", "output": [],
-                               "incomplete_details": {"reason": "max_output_tokens"}})
+                               "incomplete_details": {"reason": "max_output_tokens"}}, received_failure=True)
         self.assertFalse(result["usage_reported"])
         self.assertEqual(result["usage"], {})
 
@@ -102,7 +107,7 @@ class ResponsesReceiptTests(unittest.TestCase):
             self.call({"status": "completed", "output": []})
 
     def test_failed_response_retains_error_without_inventing_text(self):
-        result, _ = self.call({"status": "failed", "output": [], "error": {"code": "server_error"}})
+        result, _ = self.call({"status": "failed", "output": [], "error": {"code": "server_error"}}, received_failure=True)
         self.assertEqual(result["response_error"], {"code": "server_error"})
         self.assertEqual(result["content"], "")
 

@@ -7,7 +7,7 @@ import time
 
 from .centerline import analyze_centerline, render_centerline_hints
 from .constants import CHAT_PROMPT_TEMPLATE, chat_runtime_system
-from .llm import call_llm_result, completion_token_count, config_with_output_token_limit, extract_json_object, extract_json_object_with_metadata, llm_config_metadata
+from .llm import LLMResponseError, call_llm_result, completion_token_count, config_with_output_token_limit, extract_json_object, extract_json_object_with_metadata, llm_config_metadata
 from .memory import add_turn, build_context_pack, queue_add_note, render_audit, render_linked_turns, render_recent_turns, render_retrieved_turns, render_search_results
 from .storage import now_iso
 from .text import limit_text, limit_text_tail
@@ -119,6 +119,11 @@ def llm_trace(result: dict) -> dict:
         "duration_ms": result.get("duration_ms", 0),
         "usage": result.get("usage", {}),
         "hidden": result.get("hidden", {}),
+        "response_status": result.get("response_status", ""),
+        "response_id": result.get("response_id", ""),
+        "response_failure": result.get("response_failure"),
+        "incomplete_details": result.get("incomplete_details"),
+        "refusal_count": len(result.get("refusals") or []),
     }
 
 def run_scratchpad_action(
@@ -415,17 +420,23 @@ def run_chat_turn(
             )
             result = call_llm_result(call_cfg, prompt, request_system)
         except SystemExit as exc:
+            received = exc.result if isinstance(exc, LLMResponseError) else None
+            if received is not None:
+                model_calls += 1
+                output_tokens_used += completion_token_count(received.get("usage"))
             record_trace(
                 trace_events,
                 "error",
                 tool_step=tool_steps,
                 model_calls=model_calls,
                 error=str(exc),
+                output_tokens_used=output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
                 llm={
                     **llm_config_metadata(cfg),
                     "prompt_chars": len(prompt),
                     "system_prompt_chars": len(request_system),
+                    **(llm_trace(received) if received is not None else {}),
                 },
             )
             raise

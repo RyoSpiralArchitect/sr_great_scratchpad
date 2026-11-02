@@ -14,7 +14,7 @@ from .chat import build_chat_prompt, llm_trace
 from .dialogue import add_usage, append_jsonl, canonical_json_sha256, empty_usage
 from .experiments import write_manifest
 from .grounded_recall import runtime_hashes, strict_json
-from .llm import api_key_from_config, call_llm_result, estimate_token_count
+from .llm import LLMResponseError, api_key_from_config, call_llm_result, estimate_token_count
 from .memory_task_design import source_text
 from .storage import load_llm_config, now_iso
 from .task_contract import PROOF_INSTRUCTIONS, declare_task
@@ -193,9 +193,13 @@ def status(receipt: dict) -> str:
         return "model-mismatch"
     if receipt["request_params"] != request_params(CONFIG):
         return "request-mismatch"
+    if receipt.get("refusals"):
+        return "refusal"
     if receipt["response_status"] != "completed":
         details = receipt.get("incomplete_details") or {}
         return "output-limit" if details.get("reason") == "max_output_tokens" else "provider-incomplete"
+    if receipt.get("response_failure"):
+        return receipt["response_failure"]
     return "ok"
 
 
@@ -294,16 +298,20 @@ def run(out: Path, digest: str, cfg_path: str) -> dict:
         receipt = {"id": cell["id"], "request_sha256": cell["request_sha256"], "raw_output": None,
                    "llm": None, "response_status": None, "response_id": None, "request_params": None,
                    "incomplete_details": None, "response_error": None, "usage_reported": False,
+                   "refusals": [], "response_failure": None,
                    "client_error": None}
         try:
-            response = call_llm_result(plan["config"], cell["prompt"], cell["system"])
+            try:
+                response = call_llm_result(plan["config"], cell["prompt"], cell["system"])
+            except LLMResponseError as exc:
+                response = exc.result
             if key in json.dumps(response, ensure_ascii=False):
                 receipt["client_error"] = {"type": "UnsafeResponse", "message": "Credential reflected; response not stored."}
             elif not isinstance(response.get("content"), str):
                 raise ValueError("Provider content must be text.")
             else:
                 receipt.update(raw_output=response["content"], llm=llm_trace(response))
-                for field in ("response_status", "response_id", "request_params", "incomplete_details", "response_error", "usage_reported"):
+                for field in ("response_status", "response_id", "request_params", "incomplete_details", "response_error", "usage_reported", "refusals", "response_failure"):
                     receipt[field] = response.get(field)
         except (Exception, SystemExit) as exc:
             receipt["client_error"] = {"type": type(exc).__name__, "message": str(exc).replace(key, "[REDACTED]")[:500]}
