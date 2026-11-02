@@ -333,3 +333,10 @@ except LLMResponseError as error:
 Transport errors without a received result still have unavailable response usage.
 Missing usage is not zero. The Luna calibration runner records received refusals
 and failures, preserves known usage, and never counts them as successful answers.
+
+Dialogue manifests also charge attempts and received usage when an utterance
+aborts, without counting it as a completed turn. `unavailable_usage_calls` marks
+unreported usage; zero recorded tokens on such a call is not zero consumption.
+Frozen research runs still require their recorded source revision for exact
+replay. Operational fixes to shared dialogue code do not authorize bypassing
+historical runtime/scoring dependency hash guards or rerunning a failed slot.

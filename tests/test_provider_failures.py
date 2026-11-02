@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from great_scratchpad.chat import run_chat_turn
 from great_scratchpad.dialogue import canonical_json_sha256
+from great_scratchpad.dialogue import run_dialogue_matrix
 from great_scratchpad.experiments import trace_summary, write_manifest
 from great_scratchpad.llm import LLMResponseError, draft_annotation
 from great_scratchpad.luna_uncertainty import CONFIG, audit, build_plan, run
@@ -117,6 +119,81 @@ class CampaignReceivedFailureTests(unittest.TestCase):
                 self.assertEqual(received["response_status"], failed["status"])
                 self.assertEqual(received["llm"]["usage"]["total_tokens"], 15)
                 self.assertEqual(audit(plan, digest, out), result)
+
+
+class DialogueFailureAccountingTests(unittest.TestCase):
+    def matrix(self, root, condition, max_steps=0):
+        config_path = root / "profiles.json"
+        write_manifest(config_path, {"default_profile": CONFIG["profile"],
+                                     "profiles": {CONFIG["profile"]: {k: v for k, v in CONFIG.items() if k != "profile"}}})
+        return run_dialogue_matrix(
+            root=root / "scratchpad", scenario_path=Path(__file__).resolve().parents[1] / "scenarios/luna_centerline_dialogue.json",
+            profile=CONFIG["profile"], llm_config=str(config_path), out_dir=root / "run", conditions=[condition],
+            turns=2, replicates=1, turn_output_tokens=200, max_steps=max_steps, recent_n=0,
+            max_tool_chars=1000, json_repair_steps=0, policy="read-only", max_api_calls=20,
+            max_suite_output_tokens=10000, quiet=True,
+        )
+
+    def test_received_failure_is_charged_in_manifest_and_trace_for_every_dialogue_mode(self):
+        for condition in ("raw-raw", "scratchpad-scratchpad", "raw-scratchpad", "scratchpad-raw"):
+            for response in (payload("failed"), payload("incomplete"), payload(refusal=True)):
+                with self.subTest(condition=condition, state=response["status"]), tempfile.TemporaryDirectory() as tmp:
+                    with patch("great_scratchpad.llm.api_key_from_config", return_value="test-secret"), \
+                            patch("great_scratchpad.llm.urllib.request.urlopen", return_value=wire(response)) as post:
+                        result = self.matrix(Path(tmp), condition)
+                    session = result["sessions"][0]
+                    self.assertEqual(post.call_count, 1)
+                    self.assertEqual(result["status"], "failed")
+                    self.assertEqual(session["model_calls"], 1)
+                    self.assertEqual(session["turns_completed"], 0)
+                    self.assertEqual(session["usage"]["total_tokens"], 15)
+                    self.assertEqual(session["unavailable_usage_calls"], 0)
+                    trace = [json.loads(s) for s in Path(session["trace_path"]).read_text().splitlines()]
+                    self.assertEqual(trace_summary(trace)["usage"]["total_tokens"], 15)
+                    self.assertEqual(json.loads(Path(session["manifest_path"]).read_text())["model_calls"], 1)
+
+    def test_failure_after_a_completed_turn_does_not_double_count_previous_usage(self):
+        for condition in ("raw-raw", "scratchpad-scratchpad"):
+            with self.subTest(condition=condition), tempfile.TemporaryDirectory() as tmp:
+                message = "first reply" if condition == "raw-raw" else json.dumps({"type": "final", "message": "first reply"})
+                with patch("great_scratchpad.llm.api_key_from_config", return_value="test-secret"), \
+                        patch("great_scratchpad.llm.urllib.request.urlopen", side_effect=[wire(payload(text=message)), wire(payload("failed"))]) as post:
+                    result = self.matrix(Path(tmp), condition)
+                session = result["sessions"][0]
+                self.assertEqual(post.call_count, 2)
+                self.assertEqual(session["model_calls"], 2)
+                self.assertEqual(session["turns_completed"], 1)
+                self.assertEqual(session["usage"]["total_tokens"], 30)
+                self.assertEqual(session["messages"][-1]["status"], "failed")
+
+    def test_successful_tool_call_before_failure_is_accounted_without_completed_utterance(self):
+        action = json.dumps({"type": "action", "action": "scratchpad.search", "query": "contract", "top": 1})
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("great_scratchpad.llm.api_key_from_config", return_value="test-secret"), \
+                    patch("great_scratchpad.llm.urllib.request.urlopen", side_effect=[wire(payload(text=action)), wire(payload("failed"))]) as post:
+                result = self.matrix(Path(tmp), "scratchpad-scratchpad", max_steps=1)
+            session = result["sessions"][0]
+            self.assertEqual(post.call_count, 2)
+            self.assertEqual(session["model_calls"], 2)
+            self.assertEqual(session["tool_steps"], 1)
+            self.assertEqual(session["turns_completed"], 0)
+            self.assertEqual(session["usage"]["total_tokens"], 30)
+
+    def test_unreported_usage_stays_explicitly_unknown_not_zero_cost(self):
+        missing_usage = payload("failed")
+        del missing_usage["usage"]
+        for condition in ("raw-raw", "scratchpad-scratchpad"):
+            for unavailable in (missing_usage, urllib.error.URLError("offline fixture")):
+                with self.subTest(condition=condition, transport=isinstance(unavailable, Exception)), tempfile.TemporaryDirectory() as tmp:
+                    kwargs = {"side_effect": unavailable} if isinstance(unavailable, Exception) else {"return_value": wire(unavailable)}
+                    with patch("great_scratchpad.llm.api_key_from_config", return_value="test-secret"), \
+                            patch("great_scratchpad.llm.urllib.request.urlopen", **kwargs) as post:
+                        result = self.matrix(Path(tmp), condition)
+                    session = result["sessions"][0]
+                    self.assertEqual(post.call_count, 1)
+                    self.assertEqual(session["model_calls"], 1)
+                    self.assertEqual(session["unavailable_usage_calls"], 1)
+                    self.assertIn("missing provider usage is not zero", Path(result["report_path"]).read_text())
 
 
 if __name__ == "__main__":

@@ -81,7 +81,7 @@ def load_histories(runs_root: Path) -> list[dict]:
             raise ValueError("Historical plan digest mismatch.")
         dependencies = ("uncertainty_contract.py", "grounded_recall.py", "memory_task_design.py", "dialogue.py")
         if any(sha(REPO / "great_scratchpad" / f) != plan["runtime_sha256"][f] for f in dependencies):
-            raise ValueError("The frozen assessor or a scoring dependency changed.")
+            raise ValueError("A frozen scoring dependency file changed; use the protocol's recorded source revision or version a new protocol.")
         result = audit_mistral(plan, witness["digest"], directory, "calibration")
         histories.append({"cohort": label, "witness": witness, "config": plan["config"],
                           "source_commit": plan["source_commit"], "system": plan["systems"]["evidence-state"],

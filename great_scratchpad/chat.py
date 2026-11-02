@@ -118,6 +118,7 @@ def llm_trace(result: dict) -> dict:
         "system_prompt_chars": result.get("system_prompt_chars", 0),
         "duration_ms": result.get("duration_ms", 0),
         "usage": result.get("usage", {}),
+        "usage_reported": result.get("usage_reported"),
         "hidden": result.get("hidden", {}),
         "response_status": result.get("response_status", ""),
         "response_id": result.get("response_id", ""),
@@ -421,8 +422,8 @@ def run_chat_turn(
             result = call_llm_result(call_cfg, prompt, request_system)
         except SystemExit as exc:
             received = exc.result if isinstance(exc, LLMResponseError) else None
+            model_calls += 1
             if received is not None:
-                model_calls += 1
                 output_tokens_used += completion_token_count(received.get("usage"))
             record_trace(
                 trace_events,
@@ -430,6 +431,7 @@ def run_chat_turn(
                 tool_step=tool_steps,
                 model_calls=model_calls,
                 error=str(exc),
+                received_response=received is not None,
                 output_tokens_used=output_tokens_used,
                 duration_ms=round((time.perf_counter() - turn_started) * 1000, 3),
                 llm={
