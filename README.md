@@ -753,6 +753,10 @@ reasoning and records incomplete-response status and usage. The
 [Luna comparison protocol](docs/luna-uncertainty-v3-protocol.md) replicates the
 previous 24 inputs and tests declared task kind and branch-specific proof
 instructions on a fresh four-arm calibration, without resuming a failed pilot.
+The [Luna results](docs/luna-uncertainty-v3-results.md) show a shared empty-source
+flag failure, but also a regression from prompt-only task/schema declarations:
+strict success was 14/15 generic, 9/15 task-kind, 15/15 proof, and 14/15 combined.
+These are calibration observations, not deployment or retrieval efficacy claims.
 
 Run the included smoke test:
 
