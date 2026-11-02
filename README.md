@@ -760,6 +760,14 @@ flag failure, but also a regression from prompt-only task/schema declarations:
 strict success was 14/15 generic, 9/15 task-kind, 15/15 proof, and 14/15 combined.
 These are calibration observations, not deployment or retrieval efficacy claims.
 
+The [caller-owned native contract](docs/structured-tasks.md) also has a
+[frozen GPT-6 Luna comparison](docs/luna-native-contract-results.md). It retains
+the first two-attempt compatibility stop and a separately authorized fresh
+30-call revision. Both arms passed shape checks 15/15; strict success was JSON
+mode 13/15 versus native 12/15. Prose citation strings and an underspecified
+branch-proof obligation remain distinct from schema validity; neither arm
+cleared the 15/15 semantic gate.
+
 Run the included smoke test:
 
 ```bash

@@ -120,11 +120,14 @@ and [refusal handling](https://developers.openai.com/api/docs/guides/structured-
 Offline tests inspect real adapter requests and completed/failure receipts,
 including unknown-with-evidence, empty sources, every flag state, missing/extra
 fields, duplicate keys/IDs, foreign citations, model mismatch and downgrade
-attempts. No new paid provider request has been issued for this implementation;
-mocked wire validation is not proof that a model supports this schema in service,
-nor evidence of improved reasoning or grounded recall.
+attempts. The initial implementation was verified offline. The subsequent
+[frozen GPT-6 Luna calibration](luna-native-contract-results.md) retained a
+two-attempt V1 compatibility stop, then completed thirty explicitly authorized
+fresh V1.1 requests. Both arms passed shape checks 15/15, but strict success was
+native 12/15 versus JSON mode 13/15. Native prose citation strings were correctly
+rejected locally; native shape alone did not establish semantic grounding.
 
-Before adoption, freeze a new bounded protocol using fresh cases. Compare the
+Before any adoption, freeze a new bounded protocol using fresh cases. Compare the
 same schema-visible prompts, system instructions, records, model, budgets and
 order-balancing, changing only the native format versus JSON mode. Record schema
 acceptance, refusals and usage separately from local shape success, semantic

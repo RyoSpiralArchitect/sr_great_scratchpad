@@ -339,6 +339,23 @@ class NativeCampaignTests(unittest.TestCase):
             request_params("scoped-exception", "auto")
         self.assertEqual(outcome({"request_params": {}}, {"unsafe_response": True, "llm": None}), "unsafe-response")
 
+    def test_v11_checks_both_historical_witnesses_before_using_fresh_cases(self):
+        from great_scratchpad.luna_uncertainty import sha
+        with tempfile.TemporaryDirectory() as tmp:
+            witnesses = []
+            for name, plan in (("parent", parent_fixture()), ("stopped", self.plan)):
+                path = Path(tmp) / name / "plan.json"
+                digest = canonical_json_sha256(plan)
+                write_manifest(path, {"plan_sha256": digest, "plan": plan})
+                witnesses.append({"directory": name, "plan_sha256": digest, "files": {"plan.json": sha(path)}})
+            with patch("great_scratchpad.native_contract_experiment.PARENT", witnesses[0]), \
+                    patch("great_scratchpad.native_contract_experiment.STOPPED_V1", witnesses[1]):
+                combined = load_parent(Path(tmp), SPEC_V11)
+                self.assertEqual(len(combined["cases"]), 20)
+                (Path(tmp) / "stopped/plan.json").write_text("{}")
+                with self.assertRaises(ValueError):
+                    load_parent(Path(tmp), SPEC_V11)
+
     def test_stopped_run_cli_does_not_report_process_success(self):
         with patch("sys.argv", ["native_contract_experiment", "run", "--out-dir", "unused", "--plan-sha256", "fixture"]), \
                 patch("great_scratchpad.native_contract_experiment.run", return_value={"status": "stopped"}):

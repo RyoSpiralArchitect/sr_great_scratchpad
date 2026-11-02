@@ -154,6 +154,14 @@ class NativeTaskTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_task_answer(json.dumps(UNKNOWN), family, ["request"])
 
+    def test_embedded_citation_ids_are_not_normalized_out_of_prose(self):
+        for evidence in (["request: supplied request text"], ["[request] supplied request text"]):
+            raw = json.dumps({**UNKNOWN, "evidence": evidence})
+            with self.subTest(evidence=evidence), self.assertRaises(TaskContractError) as caught:
+                self.call(payload(raw))
+            self.assertEqual(caught.exception.result["content"], raw)
+            self.assertEqual(caught.exception.result["usage"]["total_tokens"], 15)
+
     def test_refusal_and_partial_failures_keep_usage_and_do_not_repair(self):
         refusal = payload("")
         refusal["output"][0]["content"] = [{"type": "refusal", "refusal": "fixture refusal"}]
