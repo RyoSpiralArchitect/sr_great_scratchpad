@@ -9,7 +9,7 @@ from pathlib import Path
 from .centerline import analyze_centerline, render_centerline_hints
 from .chat import append_trace_events, llm_trace, run_chat_turn
 from .experiments import add_run_id, make_run_id, write_manifest
-from .llm import call_llm_result, config_with_output_token_limit, llm_config_metadata
+from .llm import LLMResponseError, call_llm_result, config_with_output_token_limit, llm_config_metadata
 from .memory import add_turn
 from .storage import ensure_root, ensure_thread_dirs, load_llm_config, now_iso, safe_id
 from .text import auto_keys, build_turn_md, limit_text_tail
@@ -703,6 +703,7 @@ def call_raw_dialogue_turn(
     output_token_budget: int,
     history_chars: int = 4000,
     mode: str = "raw",
+    trace_events: list[dict] | None = None,
 ) -> tuple[str, list[dict], dict]:
     if mode not in PLAIN_DIALOGUE_MODES:
         raise ValueError(f"Unsupported plain dialogue mode: {mode}")
@@ -732,7 +733,8 @@ def call_raw_dialogue_turn(
         history_chars=history_chars,
     )
     call_cfg = config_with_output_token_limit(raw_dialogue_config(cfg), output_token_budget)
-    events = [
+    events = trace_events if trace_events is not None else []
+    events.extend([
         {
             "time": now_iso(),
             "event": "turn_start",
@@ -763,10 +765,11 @@ def call_raw_dialogue_turn(
             "history_chars": history_chars,
             "llm": llm_config_metadata(call_cfg),
         },
-    ]
+    ])
     try:
         result = call_llm_result(call_cfg, prompt, system_prompt)
     except SystemExit as exc:
+        received = exc.result if isinstance(exc, LLMResponseError) else None
         events.append(
             {
                 "time": now_iso(),
@@ -775,6 +778,9 @@ def call_raw_dialogue_turn(
                 "mode": mode,
                 "turn": turn,
                 "error": str(exc),
+                "model_calls": 1,
+                "received_response": received is not None,
+                "llm": llm_trace(received) if received is not None else llm_config_metadata(call_cfg),
                 "duration_ms": round((time.perf_counter() - started) * 1000, 3),
             }
         )
@@ -816,6 +822,7 @@ def call_raw_dialogue_turn(
         "memory_writes": 0,
         "centerline_flags": sorted(set(centerline.get("flags", []))),
         "usage": dict(result.get("usage", {})),
+        "unavailable_usage_calls": int(result.get("usage_reported") is False or not result.get("usage")),
         "duration_ms": duration_ms,
     }
     return message, events, summary
@@ -833,16 +840,21 @@ def summarize_scratchpad_turn(events: list[dict], message: str) -> dict:
     json_parse_errors = 0
     centerline_flags: list[str] = []
     model_calls = 0
+    requests = 0
+    unavailable_usage_calls = 0
     tool_steps = 0
     duration_ms = 0.0
     status = "ok"
     for event in events:
         name = event.get("event")
-        if name in {"model_output", "json_parse_error"}:
+        llm = event.get("llm")
+        if name == "model_request":
+            requests += 1
+        if name in {"model_output", "json_parse_error"} or (name == "error" and isinstance(llm, dict)):
             model_calls += 1
-            llm = event.get("llm")
             if isinstance(llm, dict):
                 add_usage(usage, llm.get("usage"))
+                unavailable_usage_calls += int(llm.get("usage_reported") is False or not llm.get("usage"))
         if name == "tool_observation" and not event.get("duplicate_request"):
             tool_steps += 1
             action = str(event.get("action", ""))
@@ -872,7 +884,7 @@ def summarize_scratchpad_turn(events: list[dict], message: str) -> dict:
         status = "stopped"
     return {
         "status": status,
-        "model_calls": model_calls,
+        "model_calls": max(requests, model_calls),
         "tool_steps": tool_steps,
         "tool_actions": tool_actions,
         "memory_writes": memory_writes,
@@ -884,8 +896,17 @@ def summarize_scratchpad_turn(events: list[dict], message: str) -> dict:
         "json_parse_errors": json_parse_errors,
         "centerline_flags": sorted(set(centerline_flags)),
         "usage": usage,
+        "unavailable_usage_calls": unavailable_usage_calls,
         "duration_ms": duration_ms,
     }
+
+
+def add_turn_accounting(session: dict, summary: dict) -> None:
+    for key in ("model_calls", "tool_steps", "memory_writes", "memory_context_injections",
+                "retrieval_context_injections", "retrieval_context_sources", "retrieval_context_chars",
+                "protocol_recoveries", "json_parse_errors", "unavailable_usage_calls"):
+        session[key] = int(session.get(key, 0)) + int(summary.get(key, 0))
+    add_usage(session["usage"], summary["usage"])
 
 
 def tag_dialogue_events(
@@ -1282,6 +1303,9 @@ def dialogue_report_markdown(result: dict) -> str:
                 f"- Frozen note byte identity verified: {replay.get('verified', False)}",
             ]
         )
+    unavailable = sum(s.get("unavailable_usage_calls", 0) for s in result.get("sessions", []))
+    if unavailable:
+        lines.append(f"- Usage incomplete for {unavailable} call(s); missing provider usage is not zero.")
     lines.extend(
         [
         "",
@@ -1523,6 +1547,7 @@ def run_dialogue_matrix(
                 "protocol_recoveries": 0,
                 "json_parse_errors": 0,
                 "usage": empty_usage(),
+                "unavailable_usage_calls": 0,
                 "trace_path": str(trace_path),
                 "transcript_path": str(transcript_path),
                 "transcript_markdown_path": str(transcript_md_path),
@@ -1567,6 +1592,7 @@ def run_dialogue_matrix(
                             output_token_budget=turn_output_tokens,
                             history_chars=history_chars,
                             mode=mode,
+                            trace_events=events,
                         )
                     else:
                         scratch_root, tdir, thread_id = scratchpads[speaker]
@@ -1636,6 +1662,7 @@ def run_dialogue_matrix(
                         )
                         turn_summary = summarize_scratchpad_turn(events, message)
                 except SystemExit as exc:
+                    add_turn_accounting(session, summarize_scratchpad_turn(events, ""))
                     events.append(
                         {
                             "time": now_iso(),
@@ -1649,6 +1676,7 @@ def run_dialogue_matrix(
                     append_trace_events(trace_path, events)
                     session["status"] = "failed"
                     session["error"] = str(exc)
+                    session["messages"].append({"turn": turn, "speaker": speaker, "mode": mode, "status": "failed"})
                     abort = True
                     break
 
@@ -1673,28 +1701,7 @@ def run_dialogue_matrix(
                 records.append(record)
                 append_jsonl(transcript_path, record)
                 session["turns_completed"] = turn
-                session["model_calls"] += int(turn_summary["model_calls"])
-                session["tool_steps"] += int(turn_summary["tool_steps"])
-                session["memory_writes"] += int(turn_summary["memory_writes"])
-                session["memory_context_injections"] += int(
-                    turn_summary.get("memory_context_injections", 0)
-                )
-                session["retrieval_context_injections"] += int(
-                    turn_summary.get("retrieval_context_injections", 0)
-                )
-                session["retrieval_context_sources"] += int(
-                    turn_summary.get("retrieval_context_sources", 0)
-                )
-                session["retrieval_context_chars"] += int(
-                    turn_summary.get("retrieval_context_chars", 0)
-                )
-                session["protocol_recoveries"] += int(
-                    turn_summary.get("protocol_recoveries", 0)
-                )
-                session["json_parse_errors"] += int(
-                    turn_summary.get("json_parse_errors", 0)
-                )
-                add_usage(session["usage"], turn_summary["usage"])
+                add_turn_accounting(session, turn_summary)
                 session["messages"].append(
                     {
                         "turn": turn,

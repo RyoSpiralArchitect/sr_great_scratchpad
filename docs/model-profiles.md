@@ -5,14 +5,14 @@ HTTP profile, or a local command profile. API profiles are usually easier to
 observe because provider usage can be captured in chat traces. Command profiles
 are useful when you want the simplest possible local process.
 
-The chat runtime expects the model to return JSON objects. Use low temperature
-for early experiments and keep `--json-repair-steps` enabled while comparing
-models.
+The chat runtime expects JSON objects. Use only sampling settings supported by
+the selected model. `--json-repair-steps` applies to completed textual replies,
+not terminal provider failures or refusals.
 
 ## OpenAI profiles
 
 Use `llm-config openai` for the OpenAI API. These profiles store
-`backend=openai` and `adapter=auto`, so GPT-5.x / GPT-5.6 models use the
+`backend=openai` and `adapter=auto`, so GPT-5.x and GPT-6.x models use the
 Responses API while older models can still be routed by adapter rules.
 
 ### GPT-5.6 Luna
@@ -306,3 +306,37 @@ References:
 - llama.cpp `llama-server`: https://www.mintlify.com/ggml-org/llama.cpp/inference/server
 - llama-cpp-python server: https://llama-cpp-python.readthedocs.io/en/latest/server/
 - vLLM OpenAI-compatible server: https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
+
+## Received Provider Failures
+
+Responses API terminal failures, refusals and completed responses without final
+text raise `LLMResponseError`, a `SystemExit` subclass. Ordinary chat and annotation
+callers stop; these outcomes are not malformed JSON eligible for automatic repair.
+Completed textual responses with malformed JSON keep the existing bounded repair
+behavior. Partial text from an incomplete response is not accepted as success.
+
+The exception's `result` retains response identity/status, reported usage,
+request parameters, refusal information and timing metadata. Receipt-aware callers
+may record it as a **failed** outcome without issuing a second request:
+
+```python
+from great_scratchpad.llm import LLMResponseError, call_llm_result
+
+try:
+    result = call_llm_result(config, prompt, system_prompt)
+except LLMResponseError as error:
+    failed_receipt = error.result
+    # Record the failure and any reported usage; do not repair or retry it.
+    raise
+```
+
+Transport errors without a received result still have unavailable response usage.
+Missing usage is not zero. The Luna calibration runner records received refusals
+and failures, preserves known usage, and never counts them as successful answers.
+
+Dialogue manifests also charge attempts and received usage when an utterance
+aborts, without counting it as a completed turn. `unavailable_usage_calls` marks
+unreported usage; zero recorded tokens on such a call is not zero consumption.
+Frozen research runs still require their recorded source revision for exact
+replay. Operational fixes to shared dialogue code do not authorize bypassing
+historical runtime/scoring dependency hash guards or rerunning a failed slot.
