@@ -106,6 +106,8 @@ sr:monday-meawness> audit
 
 LLMはannotationの「確定者」ではなく draft producer として使います。provider APIもlocal LLMも `llm.json` のprofileとして設定し、`annotate` またはREPLの `annotate` から呼び出します。実モデル向けの詳しいprofile例は [`docs/model-profiles.md`](docs/model-profiles.md) にあります。
 
+呼び出し側でタスクごとの出力形を固定する、明示的な Responses API 接続口は [`docs/structured-tasks.md`](docs/structured-tasks.md) を参照してください。通常の会話と凍結済み実験は変えず、未確定状態とその根拠を保持します。APIの形の保証と、根拠・判断の意味的な妥当性は別に検証します。
+
 OpenAI GPT-5.6 / Responses API:
 
 ```bash
