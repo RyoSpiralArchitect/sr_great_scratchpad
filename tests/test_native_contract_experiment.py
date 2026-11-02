@@ -10,7 +10,7 @@ from unittest.mock import patch
 from great_scratchpad.dialogue import canonical_json_sha256
 from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
-    ARMS, CONFIG, PARENT, SPEC, SYSTEM, assess, audit, build_plan, load_parent, load_plan, outcome,
+    ARMS, CONFIG, PARENT, SPEC, SPEC_V11, SYSTEM, assess, audit, build_plan, load_parent, load_plan, outcome,
     main, prepare, request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
@@ -19,6 +19,7 @@ from great_scratchpad.uncertainty_contract import CALIBRATION_CASES, make_state_
 REPO = Path(__file__).resolve().parents[1]
 CFG_PATH = str(REPO / "examples/gpt-6-luna.json")
 SPEC_PATH = REPO / "scenarios/luna_native_contract_v1.json"
+SPEC_V11_PATH = REPO / "scenarios/luna_native_contract_v11.json"
 
 
 def parent_fixture():
@@ -30,8 +31,9 @@ class NativeCampaignTests(unittest.TestCase):
     def setUpClass(cls):
         cls.plan = build_plan(CONFIG, parent_fixture())
 
-    def fixture(self, out):
-        plan = deepcopy(self.plan)
+    def fixture(self, out, spec=SPEC):
+        plan = deepcopy(self.plan) if spec == SPEC else build_plan(
+            CONFIG, {"cases": parent_fixture()["cases"] + self.plan["cases"]}, spec)
         digest = canonical_json_sha256(plan)
         write_manifest(out / "plan.json", {"plan_sha256": digest, "plan": plan})
         return plan, digest
@@ -41,6 +43,8 @@ class NativeCampaignTests(unittest.TestCase):
 
         def call(req, **kwargs):
             body = json.loads(req.data)
+            if plan["spec"] == SPEC_V11:
+                self.assertIn("json", body["input"].lower())
             cell = lookup[(body["input"], body["text"]["format"]["type"])]
             self.assertEqual(body, {**cell["request_params"], "input": cell["prompt"], "instructions": SYSTEM})
             self.assertEqual(canonical_json_sha256(body), cell["request_sha256"])
@@ -55,8 +59,8 @@ class NativeCampaignTests(unittest.TestCase):
             return io.BytesIO(json.dumps(payload).encode())
         return call
 
-    def execute(self, out, transform=None):
-        plan, digest = self.fixture(out)
+    def execute(self, out, transform=None, spec=SPEC):
+        plan, digest = self.fixture(out, spec)
         with patch("great_scratchpad.llm.api_key_from_config", return_value="fake-native-secret"), \
                 patch("great_scratchpad.native_contract_experiment.api_key_from_config", return_value="fake-native-secret"), \
                 patch("great_scratchpad.llm.urllib.request.urlopen", side_effect=self.provider(plan, transform)) as post:
@@ -93,6 +97,31 @@ class NativeCampaignTests(unittest.TestCase):
                 self.assertEqual(set(r), {"id", "text"})
             self.assertIn("Output schema (structure only)", a["prompt"])
         self.assertEqual(sum(c["arm"] == "native" for c in self.plan["cells"][::2]), 8)
+
+    def test_v11_adds_json_to_input_without_changing_the_contract_or_semantic_gate(self):
+        self.assertEqual(json.loads(SPEC_V11_PATH.read_text()), SPEC_V11)
+        plan = build_plan(CONFIG, {"cases": parent_fixture()["cases"] + self.plan["cases"]}, SPEC_V11)
+        self.assertEqual(plan["spec"]["future_gate"], self.plan["spec"]["future_gate"])
+        self.assertEqual(plan["spec"]["max_calls"], 30)
+        self.assertEqual(len(plan["cases"]), 10)
+        for field in ("seed", "id", "target"):
+            self.assertFalse({c[field] for c in plan["cases"]} & {c[field] for c in self.plan["cases"]})
+        for old, new in zip(self.plan["cells"], plan["cells"]):
+            self.assertEqual(old["request_params"], new["request_params"])
+            self.assertEqual(old["system"], new["system"])
+            self.assertEqual(old["task"]["question"].split("\n", 1)[1].replace("Output schema", "Output JSON schema"),
+                             new["task"]["question"].split("\n", 1)[1])
+            self.assertIn("JSON", new["prompt"])
+        self.assertEqual(plan["cells"][0]["prompt"], plan["cells"][1]["prompt"])
+
+    def test_v11_uses_the_actual_native_helper_and_json_ready_control_once_each(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), spec=SPEC_V11)
+            self.assertEqual(calls, 30)
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["method"], SPEC_V11["schema"])
+            self.assertEqual(audit(plan, digest, Path(tmp)), result)
+            self.assertEqual(summarize(plan, result)["method"], SPEC_V11["schema"])
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):
         empty = [c for c in self.plan["cells"] if c["condition"] == "empty"]
@@ -261,12 +290,19 @@ class NativeCampaignTests(unittest.TestCase):
                     patch("great_scratchpad.native_contract_experiment.source_revision", return_value="committed-fixture"):
                 for limits in ((29, 122880, 300000), (30, 122879, 300000), (30, 122880, 1)):
                     with self.assertRaises(ValueError):
-                        prepare(out, Path(tmp), SPEC_PATH, CFG_PATH, *limits)
+                        prepare(out, Path(tmp), SPEC_V11_PATH, CFG_PATH, *limits)
                     self.assertFalse(out.exists())
-                envelope = prepare(out, Path(tmp), SPEC_PATH, CFG_PATH, 30, 122880, 300000)
+                envelope = prepare(out, Path(tmp), SPEC_V11_PATH, CFG_PATH, 30, 122880, 300000)
                 self.assertEqual(load_plan(out, envelope["plan_sha256"], CFG_PATH), envelope["plan"])
                 with self.assertRaises(FileExistsError):
-                    prepare(out, Path(tmp), SPEC_PATH, CFG_PATH, 30, 122880, 300000)
+                    prepare(out, Path(tmp), SPEC_V11_PATH, CFG_PATH, 30, 122880, 300000)
+
+    def test_stopped_v1_cannot_be_prepared_as_a_new_current_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "not-issued"
+            with self.assertRaisesRegex(ValueError, "retained stopped"):
+                prepare(out, Path(tmp), SPEC_PATH, CFG_PATH, 30, 122880, 300000)
+            self.assertFalse(out.exists())
 
     def test_audit_rejects_lost_usage_and_omitted_slots(self):
         with tempfile.TemporaryDirectory() as tmp:

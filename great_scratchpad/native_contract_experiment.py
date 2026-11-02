@@ -33,6 +33,7 @@ SPEC = {"schema": METHOD, "model": "gpt-6-luna", "fresh_seed": 26110311,
         "partial_scenarios": ["urgent-enabled", "complete-join"],
         "max_calls": 30, "per_call_output_tokens": 4096, "retries": 0, "pilot_calls": 0,
         "future_gate": "all 15 views pass both caller and semantic contracts; no retrieval pilot authorized"}
+SPEC_V11 = {**SPEC, "schema": "luna-native-contract-v11", "fresh_seed": 26110312}
 PARENT = {"directory": "luna-uncertainty-v3-20261103",
           "plan_sha256": "05c71e2f08e61e2d005868342b2c95334af68eeab5d608a26cdad92c09fc03fe",
           "files": {
@@ -43,18 +44,37 @@ PARENT = {"directory": "luna-uncertainty-v3-20261103",
               "summary.json": "5e6744eba927e4fb095a1a96fd693e4ae4e12533e5734d9446b05cd3ceb077e6",
               "audit.json": "3f0d02b3b1dfba99c53acc85bae2adeb8a4ee9a0c141b24eb601848051016805",
           }}
+STOPPED_V1 = {"directory": "luna-native-contract-v1-20261103",
+              "plan_sha256": "275c4aeb1167950e952781c1ff5c08d0a53620478260bcf2f3fcb5abdd787a74",
+              "files": {
+                  "plan.json": "fbe484690eb4dd45efb03998866409bcab5bf5d1e75531af47897192e67fc191",
+                  "execution/result.json": "8227a8609f666395a1bf17451654a7118ed91be23b4d78d3433bf63f39664a4f",
+                  "execution/attempts.jsonl": "39dc28d21b787ca9b384c25c63f782f670b944d272b30b1c891e65d865cab9ab",
+                  "execution/responses.jsonl": "29c2fbb563be7f8156310cf86a4a7ac52d687700d900db9e2c1292cc30281723",
+                  "summary.json": "855fef019e3f7fc72ea17a14f880fb57f126359369a6d71f881080cc1288b3b3",
+                  "audit.json": "2ecad1749350c3df90346d2281ecd3b68c19d8fb4e5f9d6fd5bbf072eb6830f9",
+                  "launcher-note.json": "fa0b99091b066d1345e434d627bca1166c04f7a0d50f6dba97aa0e6308272119",
+              }}
 STOP_OUTCOMES = {"client-error", "unsafe-response", "model-mismatch", "request-mismatch"}
 
 
-def load_parent(runs_root: Path) -> dict:
-    directory = runs_root / PARENT["directory"]
-    if any(sha(directory / name) != digest for name, digest in PARENT["files"].items()):
+def witness_plan(runs_root: Path, witness: dict) -> dict:
+    directory = runs_root / witness["directory"]
+    if any(sha(directory / name) != digest for name, digest in witness["files"].items()):
         raise ValueError("Historical evidence changed; do not overwrite or regrade it.")
     envelope = strict_json((directory / "plan.json").read_text())
-    if (envelope["plan_sha256"] != PARENT["plan_sha256"]
-            or canonical_json_sha256(envelope["plan"]) != PARENT["plan_sha256"]):
+    if (envelope["plan_sha256"] != witness["plan_sha256"]
+            or canonical_json_sha256(envelope["plan"]) != witness["plan_sha256"]):
         raise ValueError("Historical plan digest mismatch.")
     return envelope["plan"]
+
+
+def load_parent(runs_root: Path, spec: dict = SPEC) -> dict:
+    parent = witness_plan(runs_root, PARENT)
+    if spec == SPEC_V11:
+        stopped = witness_plan(runs_root, STOPPED_V1)
+        return {**parent, "cases": parent["cases"] + stopped["cases"]}
+    return parent
 
 
 def request_params(family: str, arm: str) -> dict:
@@ -65,30 +85,33 @@ def request_params(family: str, arm: str) -> dict:
             "text": {"format": native_task_format(family) if arm == "native" else {"type": "json_object"}}}
 
 
-def public_task(case: dict, records: list[dict]) -> dict:
+def public_task(case: dict, records: list[dict], json_label: bool = False) -> dict:
     schema = json.dumps(native_task_schema(case["family"]), sort_keys=True, separators=(",", ":"))
+    label = "Output JSON schema" if json_label else "Output schema"
     return validate_task_input({"family": case["family"],
-                                "question": case["query"] + "\nOutput schema (structure only):\n" + schema,
+                                "question": case["query"] + f"\n{label} (structure only):\n" + schema,
                                 "records": [{"id": r["id"], "text": source_text(r)} for r in records]})
 
 
-def build_plan(cfg: dict, parent_plan: dict) -> dict:
+def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
+    if spec not in (SPEC, SPEC_V11):
+        raise ValueError("Unknown calibration protocol; version it before spending.")
     cfg = config(cfg)
     cases, cells = [], []
     view_index = 0
     for scenario in CALIBRATION_CASES:
-        case = make_state_case(SPEC["fresh_seed"], scenario, "native-fresh", 18)
+        case = make_state_case(spec["fresh_seed"], scenario, "native-fresh", 18)
         cases.append(case)
         records = [r for r in case["records"] if r["kind"] != "distractor"]
         views = [("source", records)]
-        if scenario in SPEC["empty_scenarios"]:
+        if scenario in spec["empty_scenarios"]:
             views.append(("empty", []))
         if scenario == "urgent-enabled":
             views.append(("partial-rule", [r for r in records if r["kind"] != "override"]))
         if scenario == "complete-join":
             views.append(("partial-chain", [r for r in records if r["kind"] != "line-pool"]))
         for condition, supplied in views:
-            task = public_task(case, supplied)
+            task = public_task(case, supplied, json_label=spec == SPEC_V11)
             prompt = json.dumps(task, ensure_ascii=False, sort_keys=True)
             visible = [r["id"] for r in case["records"] if source_text(r) in prompt]
             if visible != [r["id"] for r in supplied]:
@@ -109,7 +132,8 @@ def build_plan(cfg: dict, parent_plan: dict) -> dict:
         raise ValueError("Fresh case identities overlap the retained parent.")
     if len(cases) != 10 or len(cells) != 30 or len({c["id"] for c in cells}) != 30:
         raise ValueError("Missing or duplicate frozen cases.")
-    return {"method": METHOD, "spec": SPEC, "config": cfg, "parent": PARENT,
+    return {"method": spec["schema"], "spec": spec, "config": cfg, "parent": PARENT,
+            "retained_failed": STOPPED_V1 if spec == SPEC_V11 else None,
             "cases": cases, "cells": cells, "runtime_sha256": runtime_hashes(),
             "budget": {"max_calls": 30, "max_output_tokens": 122880, "retries": 0,
                        "input_utf8_bytes": sum(c["input_utf8_bytes"] for c in cells),
@@ -118,7 +142,8 @@ def build_plan(cfg: dict, parent_plan: dict) -> dict:
 
 def source_revision() -> str:
     paths = [str(p.relative_to(REPO)) for p in sorted((REPO / "great_scratchpad").glob("*.py"))]
-    paths += ["scenarios/luna_native_contract_v1.json", "docs/luna-native-contract-v1-protocol.md"]
+    paths += ["scenarios/luna_native_contract_v1.json", "docs/luna-native-contract-v1-protocol.md",
+              "scenarios/luna_native_contract_v11.json", "docs/luna-native-contract-v11-protocol.md"]
     subprocess.run(["git", "ls-files", "--error-unmatch", *paths], cwd=REPO, capture_output=True, check=True)
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *paths], cwd=REPO, check=True)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
@@ -127,10 +152,13 @@ def source_revision() -> str:
 
 def prepare(out: Path, runs_root: Path, spec_path: Path, cfg_path: str,
             max_calls: int, max_output: int, max_input_bytes: int) -> dict:
-    if strict_json(spec_path.read_text()) != SPEC:
+    spec = strict_json(spec_path.read_text())
+    if spec not in (SPEC, SPEC_V11):
         raise ValueError("Protocol changed; version it before spending.")
+    if spec == SPEC:
+        raise ValueError("V1 is a retained stopped campaign; prepare fresh cases under V1.1 instead.")
     cfg = load_llm_config(REPO, cfg_path, CONFIG["profile"])
-    plan = build_plan(cfg, load_parent(runs_root))
+    plan = build_plan(cfg, load_parent(runs_root, spec), spec)
     if (plan["budget"]["max_calls"] > max_calls or plan["budget"]["max_output_tokens"] > max_output
             or plan["budget"]["input_utf8_bytes"] > max_input_bytes):
         raise ValueError("Whole campaign exceeds explicit limits.")
@@ -148,7 +176,9 @@ def load_plan(out: Path, digest: str, cfg_path: str) -> dict:
     cfg = config(load_llm_config(REPO, cfg_path, CONFIG["profile"]))
     if envelope["plan_sha256"] != digest or canonical_json_sha256(plan) != digest:
         raise ValueError("Frozen plan digest mismatch.")
-    if (cfg != plan["config"] or SPEC != plan["spec"] or PARENT != plan["parent"]
+    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11) or PARENT != plan["parent"]
+            or plan["method"] != plan["spec"]["schema"]
+            or plan.get("retained_failed") != (STOPPED_V1 if plan["spec"] == SPEC_V11 else None)
             or runtime_hashes() != plan["runtime_sha256"]):
         raise ValueError("Runtime, protocol or provider profile changed after freeze.")
     return plan
@@ -209,7 +239,7 @@ def run(out: Path, digest: str, cfg_path: str) -> dict:
         raise ValueError("OpenAI credential unavailable.")
     directory = out / "execution"
     directory.mkdir(exist_ok=False)
-    result = {"method": METHOD, "plan_sha256": digest, "status": "running", "started_at": now_iso(),
+    result = {"method": plan["method"], "plan_sha256": digest, "status": "running", "started_at": now_iso(),
               "attempted_calls": 0, "known_usage": empty_usage(), "unavailable_usage_calls": 0, "cells": []}
 
     def save() -> None:
@@ -229,7 +259,7 @@ def run(out: Path, digest: str, cfg_path: str) -> dict:
             try:
                 if cell["arm"] == "native":
                     response = call_structured_task(plan["config"], cell["task"],
-                                                    max_output_tokens=SPEC["per_call_output_tokens"])["llm"]
+                                                    max_output_tokens=plan["spec"]["per_call_output_tokens"])["llm"]
                 else:
                     response = call_llm_result(plan["config"], cell["prompt"], cell["system"])
             except (LLMResponseError, TaskContractError) as exc:
@@ -318,7 +348,7 @@ def summarize(plan: dict, result: dict) -> dict:
         if all(c["id"] in saved for c in cells.values()):
             pairs.append((saved[cells["json-mode"]["id"]]["assessment"]["contract_success"],
                           saved[cells["native"]["id"]]["assessment"]["contract_success"]))
-    return {"method": METHOD, "status": result["status"], "arms": arms,
+    return {"method": plan["method"], "status": result["status"], "arms": arms,
             "paired_strict": paired_counts(pairs) if pairs else {"pairs": 0, "outcomes": {}, "mean_delta": None},
             "known_usage": result["known_usage"],
             "unavailable_usage_calls": result["unavailable_usage_calls"], "pilot_calls": 0,
@@ -333,7 +363,7 @@ def main() -> None:
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--plan-sha256")
     parser.add_argument("--llm-config", default="examples/gpt-6-luna.json")
-    parser.add_argument("--spec", default="scenarios/luna_native_contract_v1.json", type=Path)
+    parser.add_argument("--spec", default="scenarios/luna_native_contract_v11.json", type=Path)
     parser.add_argument("--runs-root", default=".great_scratchpad/runs", type=Path)
     parser.add_argument("--max-calls", type=int, default=30)
     parser.add_argument("--max-output-tokens", type=int, default=122880)
