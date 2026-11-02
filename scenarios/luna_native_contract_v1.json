@@ -1,0 +1,14 @@
+{
+  "schema": "luna-native-contract-v1",
+  "model": "gpt-6-luna",
+  "fresh_seed": 26110311,
+  "arms": ["native", "json-mode"],
+  "source_scenarios": ["hold-unknown", "urgent-unknown", "hold-dominates", "urgent-enabled", "approved-update", "proposals-only", "complete-join", "pending-join", "base-route", "hold-unobserved"],
+  "empty_scenarios": ["hold-unknown", "approved-update", "complete-join"],
+  "partial_scenarios": ["urgent-enabled", "complete-join"],
+  "max_calls": 30,
+  "per_call_output_tokens": 4096,
+  "retries": 0,
+  "pilot_calls": 0,
+  "future_gate": "all 15 views pass both caller and semantic contracts; no retrieval pilot authorized"
+}
