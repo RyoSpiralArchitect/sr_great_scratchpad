@@ -10,9 +10,9 @@ from unittest.mock import patch
 from great_scratchpad.dialogue import canonical_json_sha256
 from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
-    ARMS, COMPLETED_V11, CONFIG, PARENT, SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SYSTEM,
-    assess, audit, build_plan, load_parent, load_plan, outcome, main, prepare, request_params, run,
-    summarize,
+    ARMS, COMPLETED_V11, CONFIG, FLAG_LEXICON, PARENT, SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S,
+    SPEC_V14S, SYSTEM, assess, audit, build_plan, load_parent, load_plan, outcome, main, prepare,
+    request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
 from great_scratchpad.uncertainty_contract import CALIBRATION_CASES, make_state_case
@@ -24,6 +24,7 @@ SPEC_V11_PATH = REPO / "scenarios/luna_native_contract_v11.json"
 SPEC_V12_PATH = REPO / "scenarios/luna_native_contract_v12.json"
 SPEC_V13_PATH = REPO / "scenarios/luna_native_contract_v13.json"
 SPEC_V13S_PATH = REPO / "scenarios/luna_native_contract_v13s.json"
+SPEC_V14S_PATH = REPO / "scenarios/luna_native_contract_v14s.json"
 
 
 def parent_fixture():
@@ -229,6 +230,33 @@ class NativeCampaignTests(unittest.TestCase):
             self.assertEqual(result["method"], SPEC_V13S["schema"])
             self.assertEqual(audit(plan, digest, Path(tmp)), result)
             self.assertEqual(summarize(plan, result)["method"], SPEC_V13S["schema"])
+
+    def test_v14s_adds_only_the_flag_lexicon_to_both_arms(self):
+        self.assertEqual(json.loads(SPEC_V14S_PATH.read_text()), SPEC_V14S)
+        self.assertTrue(SPEC_V14S["standalone"])
+        self.assertTrue(SPEC_V14S["flag_lexicon"])
+        plan = build_plan(CONFIG, {"cases": []}, SPEC_V14S)
+        self.assertIsNone(plan["parent"])
+        v13s = build_plan(CONFIG, {"cases": []}, SPEC_V13S)
+        for field in ("seed", "id", "target"):
+            self.assertFalse({c[field] for c in plan["cases"]} & {c[field] for c in v13s["cases"]})
+        for new, old in zip(plan["cells"], v13s["cells"]):
+            self.assertEqual(new["request_params"], old["request_params"])
+            self.assertEqual(new["system"], old["system"])
+            head, rest = new["task"]["question"].split("\nSemantic contract:\n", 1)
+            self.assertIn(FLAG_LEXICON.strip(), rest)
+            self.assertIn("\nOutput JSON schema (structure only):\n", rest)
+            self.assertIn(FLAG_LEXICON.strip(), new["prompt"])
+            self.assertNotIn(FLAG_LEXICON.strip(), old["task"]["question"])
+
+    def test_v14s_uses_the_lexicon_bearing_helper_without_any_run_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), spec=SPEC_V14S)
+            self.assertEqual(calls, 30)
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["method"], SPEC_V14S["schema"])
+            self.assertEqual(audit(plan, digest, Path(tmp)), result)
+            self.assertEqual(summarize(plan, result)["method"], SPEC_V14S["schema"])
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):
         empty = [c for c in self.plan["cells"] if c["condition"] == "empty"]

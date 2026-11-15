@@ -41,6 +41,10 @@ SPEC_V13 = {**SPEC_V11, "schema": "luna-native-contract-v13", "fresh_seed": 2611
             "semantic_contract": True}
 SPEC_V13S = {**SPEC_V11, "schema": "luna-native-contract-v13s", "fresh_seed": 26110315,
              "semantic_contract": True, "standalone": True}
+SPEC_V14S = {**SPEC_V11, "schema": "luna-native-contract-v14s", "fresh_seed": 26110316,
+             "semantic_contract": True, "flag_lexicon": True, "standalone": True}
+FLAG_LEXICON = ("\nFlag lexicon: 有効 = enabled; 無効 = disabled; 未確認 = unknown; "
+                "a flag not stated in the supplied request = unobserved.")
 PARENT = {"directory": "luna-uncertainty-v3-20261103",
           "plan_sha256": "05c71e2f08e61e2d005868342b2c95334af68eeab5d608a26cdad92c09fc03fe",
           "files": {
@@ -110,20 +114,23 @@ def request_params(family: str, arm: str, citation_ids: list[str] | None = None)
 
 
 def public_task(case: dict, records: list[dict], json_label: bool = False,
-                citation_enum: bool = False, semantic_contract: bool = False) -> dict:
+                citation_enum: bool = False, semantic_contract: bool = False,
+                flag_lexicon: bool = False) -> dict:
     citation_ids = [r["id"] for r in records] if citation_enum else None
     schema = json.dumps(native_task_schema(case["family"], citation_ids), sort_keys=True, separators=(",", ":"))
     label = "Output JSON schema" if json_label else "Output schema"
     question = case["query"]
     if semantic_contract:
         question += "\nSemantic contract:\n" + PROOF_INSTRUCTIONS.strip()
+    if flag_lexicon:
+        question += FLAG_LEXICON
     question += f"\n{label} (structure only):\n" + schema
     return validate_task_input({"family": case["family"], "question": question,
                                 "records": [{"id": r["id"], "text": source_text(r)} for r in records]})
 
 
 def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
-    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S):
+    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S):
         raise ValueError("Unknown calibration protocol; version it before spending.")
     cfg = config(cfg)
     cases, cells = [], []
@@ -142,7 +149,8 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
         for condition, supplied in views:
             task = public_task(case, supplied, json_label=spec != SPEC,
                                citation_enum=spec.get("citation_enum", False),
-                               semantic_contract=spec.get("semantic_contract", False))
+                               semantic_contract=spec.get("semantic_contract", False),
+                               flag_lexicon=spec.get("flag_lexicon", False))
             prompt = json.dumps(task, ensure_ascii=False, sort_keys=True)
             visible = [r["id"] for r in case["records"] if source_text(r) in prompt]
             if visible != [r["id"] for r in supplied]:
@@ -180,7 +188,8 @@ def source_revision() -> str:
               "scenarios/luna_native_contract_v11.json", "docs/luna-native-contract-v11-protocol.md",
               "scenarios/luna_native_contract_v12.json", "docs/luna-native-contract-v12-protocol.md",
               "scenarios/luna_native_contract_v13.json", "docs/luna-native-contract-v13-protocol.md",
-              "scenarios/luna_native_contract_v13s.json", "docs/luna-native-contract-v13s-protocol.md"]
+              "scenarios/luna_native_contract_v13s.json", "docs/luna-native-contract-v13s-protocol.md",
+              "scenarios/luna_native_contract_v14s.json", "docs/luna-native-contract-v14s-protocol.md"]
     subprocess.run(["git", "ls-files", "--error-unmatch", *paths], cwd=REPO, capture_output=True, check=True)
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *paths], cwd=REPO, check=True)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
@@ -190,7 +199,7 @@ def source_revision() -> str:
 def prepare(out: Path, runs_root: Path, spec_path: Path, cfg_path: str,
             max_calls: int, max_output: int, max_input_bytes: int) -> dict:
     spec = strict_json(spec_path.read_text())
-    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S):
+    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S):
         raise ValueError("Protocol changed; version it before spending.")
     if spec == SPEC:
         raise ValueError("V1 is a retained stopped campaign; prepare fresh cases under V1.2 instead.")
@@ -216,7 +225,7 @@ def load_plan(out: Path, digest: str, cfg_path: str) -> dict:
     if envelope["plan_sha256"] != digest or canonical_json_sha256(plan) != digest:
         raise ValueError("Frozen plan digest mismatch.")
     expected_parent = None if plan["spec"].get("standalone") else PARENT
-    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S)
+    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S)
             or plan["parent"] != expected_parent or plan["method"] != plan["spec"]["schema"]
             or plan.get("retained_failed") != (
                 None if plan["spec"].get("standalone") else (STOPPED_V1 if plan["spec"] != SPEC else None))

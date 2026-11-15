@@ -70,3 +70,28 @@ run ディレクトリは `.great_scratchpad/runs/luna-native-contract-v13s-2026
   実行は artifact が入手可能になった時点で別途行う。
 - unknown/unobserved の失敗1件は測定された失敗であり、再採点や通過への書き換えは
   行わない。
+
+## 走後分析(2026-11-15 追記)
+
+1. **失敗の根本原因は意味契約の語彙未規定**。ケース生成側は `unknown` を「未確認」、
+   `unobserved` をフラグ節の欠落で表現するが、その対応表は `STATE_SYSTEM` にのみ
+   存在し、本 helper の SYSTEM も `Semantic contract:` ブロックも語彙対応を定義して
+   いなかった。モデルは「未確認」を「未観測」と読む解釈を両群同一点で選択した。
+   形式(native schema)の問題ではなく、示された意味契約の欠落であり、測定として
+   残したまま次の版で分離検証する。
+2. **引用頑健性は未測定**。全ビューで distractor レコードは供給されず(生成されるが
+   `kind != "distractor"` で除外)、citations_relevant 15/15 はノイズなし条件での値。
+   distractor 混在ビューは将来の別 spec が担う。
+3. **native スキーマ転送オーバーヘッドは一様**。全ペアで native が約+104 input
+   tokens/call。output は native +184 total(3,550 中)。cached_tokens・reasoning
+   tokens は指標として解釈しない。
+
+## 次の磨き方
+
+1. **V1.4s**(実装・凍結済み): V1.3s + `Flag lexicon:` 1行(有効=enabled; 無効=disabled;
+   未確認=unknown; 未記載=unobserved)を両群 question に付与。語彙要因だけを分離する
+   standalone 比較。実走は別途承認。
+2. distractor 混在ビューを持つ将来 spec(未実装): 引用規律をノイズあり条件で測る。
+   view 追加で cells が増えるため、予算・ペア構成は新 spec で再定義する。
+3. witness 版 V1.3 は artifact 到達時に本走し、V1.3s との standalone/witnessed の
+   関係を結果文書で明示する。
