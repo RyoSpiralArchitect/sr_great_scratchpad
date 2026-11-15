@@ -34,6 +34,8 @@ SPEC = {"schema": METHOD, "model": "gpt-6-luna", "fresh_seed": 26110311,
         "max_calls": 30, "per_call_output_tokens": 4096, "retries": 0, "pilot_calls": 0,
         "future_gate": "all 15 views pass both caller and semantic contracts; no retrieval pilot authorized"}
 SPEC_V11 = {**SPEC, "schema": "luna-native-contract-v11", "fresh_seed": 26110312}
+SPEC_V12 = {**SPEC_V11, "schema": "luna-native-contract-v12", "fresh_seed": 26110313,
+            "citation_enum": True}
 PARENT = {"directory": "luna-uncertainty-v3-20261103",
           "plan_sha256": "05c71e2f08e61e2d005868342b2c95334af68eeab5d608a26cdad92c09fc03fe",
           "files": {
@@ -55,6 +57,16 @@ STOPPED_V1 = {"directory": "luna-native-contract-v1-20261103",
                   "audit.json": "2ecad1749350c3df90346d2281ecd3b68c19d8fb4e5f9d6fd5bbf072eb6830f9",
                   "launcher-note.json": "fa0b99091b066d1345e434d627bca1166c04f7a0d50f6dba97aa0e6308272119",
               }}
+COMPLETED_V11 = {"directory": "luna-native-contract-v11-20261103",
+                 "plan_sha256": "db95a99f934b7c5004d834bd678c5456c7b777e4c6bc0dae633928b70409c9c1",
+                 "files": {
+                     "plan.json": "b6a4c07462a729444e07347eebbfeecd1ff9dc0cb1438e39313e08c0a9414490",
+                     "execution/result.json": "17da57be44a9aa440a589601f17c13f27728aac0380bebcc87537d94188c0bcb",
+                     "execution/attempts.jsonl": "a13d2f029e6d9d9bddfed661a4092f19d2fdfd7fc7054ac46b59e00ffc2ee860",
+                     "execution/responses.jsonl": "6e08fb988be6363615f2551f3274344036d7b21d3b8a58090090811b79354c06",
+                     "summary.json": "6a502e9d3153fb7ba17830c64c78017a5d971501df0cec3115b37dd5660c4479",
+                     "audit.json": "ddd4d1794d0445f2d705632616dd4d5b127183ab5111562dcb06c39841ad95a5",
+                 }}
 STOP_OUTCOMES = {"client-error", "unsafe-response", "model-mismatch", "request-mismatch"}
 
 
@@ -74,19 +86,26 @@ def load_parent(runs_root: Path, spec: dict = SPEC) -> dict:
     if spec == SPEC_V11:
         stopped = witness_plan(runs_root, STOPPED_V1)
         return {**parent, "cases": parent["cases"] + stopped["cases"]}
+    if spec == SPEC_V12:
+        stopped = witness_plan(runs_root, STOPPED_V1)
+        completed = witness_plan(runs_root, COMPLETED_V11)
+        return {**parent, "cases": parent["cases"] + stopped["cases"] + completed["cases"]}
     return parent
 
 
-def request_params(family: str, arm: str) -> dict:
+def request_params(family: str, arm: str, citation_ids: list[str] | None = None) -> dict:
     if arm not in ARMS:
         raise ValueError("Unknown frozen experiment arm.")
     return {"model": CONFIG["model"], "reasoning": {"effort": CONFIG["reasoning_effort"]},
             "max_output_tokens": SPEC["per_call_output_tokens"], "store": False,
-            "text": {"format": native_task_format(family) if arm == "native" else {"type": "json_object"}}}
+            "text": {"format": native_task_format(family, citation_ids) if arm == "native"
+                     else {"type": "json_object"}}}
 
 
-def public_task(case: dict, records: list[dict], json_label: bool = False) -> dict:
-    schema = json.dumps(native_task_schema(case["family"]), sort_keys=True, separators=(",", ":"))
+def public_task(case: dict, records: list[dict], json_label: bool = False,
+                citation_enum: bool = False) -> dict:
+    citation_ids = [r["id"] for r in records] if citation_enum else None
+    schema = json.dumps(native_task_schema(case["family"], citation_ids), sort_keys=True, separators=(",", ":"))
     label = "Output JSON schema" if json_label else "Output schema"
     return validate_task_input({"family": case["family"],
                                 "question": case["query"] + f"\n{label} (structure only):\n" + schema,
@@ -94,7 +113,7 @@ def public_task(case: dict, records: list[dict], json_label: bool = False) -> di
 
 
 def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
-    if spec not in (SPEC, SPEC_V11):
+    if spec not in (SPEC, SPEC_V11, SPEC_V12):
         raise ValueError("Unknown calibration protocol; version it before spending.")
     cfg = config(cfg)
     cases, cells = [], []
@@ -111,13 +130,15 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
         if scenario == "complete-join":
             views.append(("partial-chain", [r for r in records if r["kind"] != "line-pool"]))
         for condition, supplied in views:
-            task = public_task(case, supplied, json_label=spec == SPEC_V11)
+            task = public_task(case, supplied, json_label=spec != SPEC,
+                               citation_enum=spec.get("citation_enum", False))
             prompt = json.dumps(task, ensure_ascii=False, sort_keys=True)
             visible = [r["id"] for r in case["records"] if source_text(r) in prompt]
             if visible != [r["id"] for r in supplied]:
                 raise ValueError("JSON serialization changed source visibility.")
             for arm in ARMS[::1 if view_index % 2 == 0 else -1]:
-                params = request_params(case["family"], arm)
+                params = request_params(case["family"], arm,
+                                        [r["id"] for r in supplied] if spec.get("citation_enum") else None)
                 body = {**params, "input": prompt, "instructions": SYSTEM}
                 cells.append({"id": f"{case['id']}:{condition}:{arm}", "case_id": case["id"], "arm": arm,
                               "scenario": scenario, "family": case["family"], "condition": condition,
@@ -133,7 +154,8 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
     if len(cases) != 10 or len(cells) != 30 or len({c["id"] for c in cells}) != 30:
         raise ValueError("Missing or duplicate frozen cases.")
     return {"method": spec["schema"], "spec": spec, "config": cfg, "parent": PARENT,
-            "retained_failed": STOPPED_V1 if spec == SPEC_V11 else None,
+            "retained_failed": STOPPED_V1 if spec in (SPEC_V11, SPEC_V12) else None,
+            "retained_completed": COMPLETED_V11 if spec == SPEC_V12 else None,
             "cases": cases, "cells": cells, "runtime_sha256": runtime_hashes(),
             "budget": {"max_calls": 30, "max_output_tokens": 122880, "retries": 0,
                        "input_utf8_bytes": sum(c["input_utf8_bytes"] for c in cells),
@@ -143,7 +165,8 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
 def source_revision() -> str:
     paths = [str(p.relative_to(REPO)) for p in sorted((REPO / "great_scratchpad").glob("*.py"))]
     paths += ["scenarios/luna_native_contract_v1.json", "docs/luna-native-contract-v1-protocol.md",
-              "scenarios/luna_native_contract_v11.json", "docs/luna-native-contract-v11-protocol.md"]
+              "scenarios/luna_native_contract_v11.json", "docs/luna-native-contract-v11-protocol.md",
+              "scenarios/luna_native_contract_v12.json", "docs/luna-native-contract-v12-protocol.md"]
     subprocess.run(["git", "ls-files", "--error-unmatch", *paths], cwd=REPO, capture_output=True, check=True)
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *paths], cwd=REPO, check=True)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
@@ -153,10 +176,12 @@ def source_revision() -> str:
 def prepare(out: Path, runs_root: Path, spec_path: Path, cfg_path: str,
             max_calls: int, max_output: int, max_input_bytes: int) -> dict:
     spec = strict_json(spec_path.read_text())
-    if spec not in (SPEC, SPEC_V11):
+    if spec not in (SPEC, SPEC_V11, SPEC_V12):
         raise ValueError("Protocol changed; version it before spending.")
     if spec == SPEC:
-        raise ValueError("V1 is a retained stopped campaign; prepare fresh cases under V1.1 instead.")
+        raise ValueError("V1 is a retained stopped campaign; prepare fresh cases under V1.2 instead.")
+    if spec == SPEC_V11:
+        raise ValueError("V1.1 is a retained completed campaign; prepare fresh cases under V1.2 instead.")
     cfg = load_llm_config(REPO, cfg_path, CONFIG["profile"])
     plan = build_plan(cfg, load_parent(runs_root, spec), spec)
     if (plan["budget"]["max_calls"] > max_calls or plan["budget"]["max_output_tokens"] > max_output
@@ -176,9 +201,10 @@ def load_plan(out: Path, digest: str, cfg_path: str) -> dict:
     cfg = config(load_llm_config(REPO, cfg_path, CONFIG["profile"]))
     if envelope["plan_sha256"] != digest or canonical_json_sha256(plan) != digest:
         raise ValueError("Frozen plan digest mismatch.")
-    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11) or PARENT != plan["parent"]
+    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11, SPEC_V12) or PARENT != plan["parent"]
             or plan["method"] != plan["spec"]["schema"]
-            or plan.get("retained_failed") != (STOPPED_V1 if plan["spec"] == SPEC_V11 else None)
+            or plan.get("retained_failed") != (STOPPED_V1 if plan["spec"] in (SPEC_V11, SPEC_V12) else None)
+            or plan.get("retained_completed") != (COMPLETED_V11 if plan["spec"] == SPEC_V12 else None)
             or runtime_hashes() != plan["runtime_sha256"]):
         raise ValueError("Runtime, protocol or provider profile changed after freeze.")
     return plan
@@ -259,7 +285,8 @@ def run(out: Path, digest: str, cfg_path: str) -> dict:
             try:
                 if cell["arm"] == "native":
                     response = call_structured_task(plan["config"], cell["task"],
-                                                    max_output_tokens=plan["spec"]["per_call_output_tokens"])["llm"]
+                                                    max_output_tokens=plan["spec"]["per_call_output_tokens"],
+                                                    citation_enum=plan["spec"].get("citation_enum", False))["llm"]
                 else:
                     response = call_llm_result(plan["config"], cell["prompt"], cell["system"])
             except (LLMResponseError, TaskContractError) as exc:
@@ -363,7 +390,7 @@ def main() -> None:
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--plan-sha256")
     parser.add_argument("--llm-config", default="examples/gpt-6-luna.json")
-    parser.add_argument("--spec", default="scenarios/luna_native_contract_v11.json", type=Path)
+    parser.add_argument("--spec", default="scenarios/luna_native_contract_v12.json", type=Path)
     parser.add_argument("--runs-root", default=".great_scratchpad/runs", type=Path)
     parser.add_argument("--max-calls", type=int, default=30)
     parser.add_argument("--max-output-tokens", type=int, default=122880)
