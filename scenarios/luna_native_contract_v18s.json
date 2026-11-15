@@ -1,0 +1,52 @@
+{
+  "arms": [
+    "native",
+    "json-mode"
+  ],
+  "distracted_scenarios": [
+    "hold-unknown",
+    "urgent-unknown",
+    "hold-dominates",
+    "urgent-enabled",
+    "approved-update",
+    "proposals-only",
+    "complete-join",
+    "pending-join",
+    "base-route",
+    "hold-unobserved"
+  ],
+  "distractor_count": 54,
+  "empty_scenarios": [
+    "hold-unknown",
+    "approved-update",
+    "complete-join"
+  ],
+  "flag_lexicon": true,
+  "flag_scope": true,
+  "fresh_seed": 26110321,
+  "future_gate": "all 25 views pass both caller and semantic contracts; no retrieval pilot authorized",
+  "max_calls": 50,
+  "model": "gpt-6-luna",
+  "partial_scenarios": [
+    "urgent-enabled",
+    "complete-join"
+  ],
+  "per_call_output_tokens": 4096,
+  "pilot_calls": 0,
+  "retries": 0,
+  "schema": "luna-native-contract-v18s",
+  "semantic_contract": true,
+  "source_scenarios": [
+    "hold-unknown",
+    "urgent-unknown",
+    "hold-dominates",
+    "urgent-enabled",
+    "approved-update",
+    "proposals-only",
+    "complete-join",
+    "pending-join",
+    "base-route",
+    "hold-unobserved"
+  ],
+  "standalone": true
+}

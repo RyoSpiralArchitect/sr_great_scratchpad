@@ -11,7 +11,8 @@ from great_scratchpad.dialogue import canonical_json_sha256
 from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
     ARMS, COMPLETED_V11, CONFIG, FLAG_LEXICON, FLAG_SCOPE, PARENT, SPEC, SPEC_V11, SPEC_V12,
-    SPEC_V12S, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V16S, SYSTEM, assess, audit,
+    SPEC_V12S, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V16S, SPEC_V17S, SPEC_V18S,
+    SYSTEM, assess, audit,
     build_plan, load_parent, load_plan, outcome, main, prepare, request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
@@ -28,6 +29,8 @@ SPEC_V14S_PATH = REPO / "scenarios/luna_native_contract_v14s.json"
 SPEC_V12S_PATH = REPO / "scenarios/luna_native_contract_v12s.json"
 SPEC_V15S_PATH = REPO / "scenarios/luna_native_contract_v15s.json"
 SPEC_V16S_PATH = REPO / "scenarios/luna_native_contract_v16s.json"
+SPEC_V17S_PATH = REPO / "scenarios/luna_native_contract_v17s.json"
+SPEC_V18S_PATH = REPO / "scenarios/luna_native_contract_v18s.json"
 
 
 def parent_fixture():
@@ -333,6 +336,55 @@ class NativeCampaignTests(unittest.TestCase):
             self.assertEqual(result["method"], SPEC_V16S["schema"])
             self.assertEqual(audit(plan, digest, Path(tmp)), result)
             self.assertEqual(summarize(plan, result)["method"], SPEC_V16S["schema"])
+
+    def test_v17s_replicates_v15s_semantics_under_a_fresh_seed(self):
+        self.assertEqual(json.loads(SPEC_V17S_PATH.read_text()), SPEC_V17S)
+        self.assertEqual({k: v for k, v in SPEC_V17S.items() if k not in ("schema", "fresh_seed")},
+                         {k: v for k, v in SPEC_V15S.items() if k not in ("schema", "fresh_seed")})
+        plan = build_plan(CONFIG, {"cases": []}, SPEC_V17S)
+        self.assertIsNone(plan["parent"])
+        self.assertEqual(len(plan["cells"]), 30)
+        for cell in plan["cells"]:
+            self.assertIn(FLAG_SCOPE.strip(), cell["task"]["question"])
+            self.assertIn(FLAG_LEXICON.strip(), cell["task"]["question"])
+        for field in ("seed", "id", "target"):
+            self.assertFalse({c[field] for c in plan["cases"]}
+                             & {c[field] for c in build_plan(CONFIG, {"cases": []}, SPEC_V15S)["cases"]})
+
+    def test_v17s_uses_the_replication_helper_without_any_run_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), spec=SPEC_V17S)
+            self.assertEqual(calls, 30)
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["method"], SPEC_V17S["schema"])
+            self.assertEqual(audit(plan, digest, Path(tmp)), result)
+            self.assertEqual(summarize(plan, result)["method"], SPEC_V17S["schema"])
+
+    def test_v18s_triples_the_distractor_load_only_on_distracted_views(self):
+        self.assertEqual(json.loads(SPEC_V18S_PATH.read_text()), SPEC_V18S)
+        self.assertEqual(SPEC_V18S["distractor_count"], 54)
+        plan = build_plan(CONFIG, {"cases": []}, SPEC_V18S)
+        self.assertEqual(len(plan["cells"]), 50)
+        distracted = [c for c in plan["cells"] if c["condition"] == "distracted" and c["arm"] == "native"]
+        self.assertEqual(len(distracted), 10)
+        for cell in distracted:
+            case = next(c for c in plan["cases"] if c["id"] == cell["case_id"])
+            relevant = [r["id"] for r in case["records"] if r["kind"] != "distractor"]
+            self.assertEqual(len(cell["visible_ids"]), len(relevant) + 54)
+            self.assertTrue(set(relevant).issubset(cell["visible_ids"]))
+            source = next(c for c in plan["cells"]
+                          if c["case_id"] == cell["case_id"] and c["condition"] == "source")
+            self.assertEqual(len(source["visible_ids"]), len(relevant))
+            self.assertEqual(cell["expected"], source["expected"])
+
+    def test_v18s_uses_the_heavy_distractor_helper_without_any_run_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), spec=SPEC_V18S)
+            self.assertEqual(calls, 50)
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["method"], SPEC_V18S["schema"])
+            self.assertEqual(audit(plan, digest, Path(tmp)), result)
+            self.assertEqual(summarize(plan, result)["method"], SPEC_V18S["schema"])
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):
         empty = [c for c in self.plan["cells"] if c["condition"] == "empty"]

@@ -52,6 +52,9 @@ SPEC_V16S = {**SPEC_V11, "schema": "luna-native-contract-v16s", "fresh_seed": 26
              "standalone": True, "distracted_scenarios": list(CALIBRATION_CASES), "max_calls": 50,
              "future_gate": "all 25 views pass both caller and semantic contracts; "
                            "no retrieval pilot authorized"}
+SPEC_V17S = {**SPEC_V15S, "schema": "luna-native-contract-v17s", "fresh_seed": 26110320}
+SPEC_V18S = {**SPEC_V16S, "schema": "luna-native-contract-v18s", "fresh_seed": 26110321,
+             "distractor_count": 54}
 FLAG_LEXICON = ("\nFlag lexicon: 有効 = enabled; 無効 = disabled; 未確認 = unknown; "
                 "a flag not stated in the supplied request = unobserved.")
 FLAG_SCOPE = "\nFor non-routing task families, use flags: {}."
@@ -142,13 +145,14 @@ def public_task(case: dict, records: list[dict], json_label: bool = False,
 
 
 def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
-    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S):
+    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S):
         raise ValueError("Unknown calibration protocol; version it before spending.")
     cfg = config(cfg)
     cases, cells = [], []
     view_index = 0
     for scenario in CALIBRATION_CASES:
-        case = make_state_case(spec["fresh_seed"], scenario, "native-fresh", 18)
+        case = make_state_case(spec["fresh_seed"], scenario, "native-fresh",
+                               spec.get("distractor_count", 18))
         cases.append(case)
         records = [r for r in case["records"] if r["kind"] != "distractor"]
         views = [("source", records)]
@@ -209,7 +213,9 @@ def source_revision() -> str:
               "scenarios/luna_native_contract_v14s.json", "docs/luna-native-contract-v14s-protocol.md",
               "scenarios/luna_native_contract_v12s.json", "docs/luna-native-contract-v12s-protocol.md",
               "scenarios/luna_native_contract_v15s.json", "docs/luna-native-contract-v15s-protocol.md",
-              "scenarios/luna_native_contract_v16s.json", "docs/luna-native-contract-v16s-protocol.md"]
+              "scenarios/luna_native_contract_v16s.json", "docs/luna-native-contract-v16s-protocol.md",
+              "scenarios/luna_native_contract_v17s.json", "docs/luna-native-contract-v17s-protocol.md",
+              "scenarios/luna_native_contract_v18s.json", "docs/luna-native-contract-v18s-protocol.md"]
     subprocess.run(["git", "ls-files", "--error-unmatch", *paths], cwd=REPO, capture_output=True, check=True)
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *paths], cwd=REPO, check=True)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
@@ -219,7 +225,7 @@ def source_revision() -> str:
 def prepare(out: Path, runs_root: Path, spec_path: Path, cfg_path: str,
             max_calls: int, max_output: int, max_input_bytes: int) -> dict:
     spec = strict_json(spec_path.read_text())
-    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S):
+    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S):
         raise ValueError("Protocol changed; version it before spending.")
     if spec == SPEC:
         raise ValueError("V1 is a retained stopped campaign; prepare fresh cases under V1.2 instead.")
@@ -245,7 +251,7 @@ def load_plan(out: Path, digest: str, cfg_path: str) -> dict:
     if envelope["plan_sha256"] != digest or canonical_json_sha256(plan) != digest:
         raise ValueError("Frozen plan digest mismatch.")
     expected_parent = None if plan["spec"].get("standalone") else PARENT
-    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S)
+    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S)
             or plan["parent"] != expected_parent or plan["method"] != plan["spec"]["schema"]
             or plan.get("retained_failed") != (
                 None if plan["spec"].get("standalone") else (STOPPED_V1 if plan["spec"] != SPEC else None))
