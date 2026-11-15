@@ -20,6 +20,7 @@ from .structured_tasks import (
     SYSTEM, TaskContractError, call_structured_task, native_task_format, native_task_schema, validate_task_answer,
     validate_task_input,
 )
+from .task_contract import PROOF_INSTRUCTIONS
 from .uncertainty_contract import CALIBRATION_CASES, assess_answer, make_state_case, reference_state
 
 REPO = Path(__file__).resolve().parents[1]
@@ -36,6 +37,8 @@ SPEC = {"schema": METHOD, "model": "gpt-6-luna", "fresh_seed": 26110311,
 SPEC_V11 = {**SPEC, "schema": "luna-native-contract-v11", "fresh_seed": 26110312}
 SPEC_V12 = {**SPEC_V11, "schema": "luna-native-contract-v12", "fresh_seed": 26110313,
             "citation_enum": True}
+SPEC_V13 = {**SPEC_V11, "schema": "luna-native-contract-v13", "fresh_seed": 26110314,
+            "semantic_contract": True}
 PARENT = {"directory": "luna-uncertainty-v3-20261103",
           "plan_sha256": "05c71e2f08e61e2d005868342b2c95334af68eeab5d608a26cdad92c09fc03fe",
           "files": {
@@ -86,7 +89,7 @@ def load_parent(runs_root: Path, spec: dict = SPEC) -> dict:
     if spec == SPEC_V11:
         stopped = witness_plan(runs_root, STOPPED_V1)
         return {**parent, "cases": parent["cases"] + stopped["cases"]}
-    if spec == SPEC_V12:
+    if spec in (SPEC_V12, SPEC_V13):
         stopped = witness_plan(runs_root, STOPPED_V1)
         completed = witness_plan(runs_root, COMPLETED_V11)
         return {**parent, "cases": parent["cases"] + stopped["cases"] + completed["cases"]}
@@ -103,17 +106,20 @@ def request_params(family: str, arm: str, citation_ids: list[str] | None = None)
 
 
 def public_task(case: dict, records: list[dict], json_label: bool = False,
-                citation_enum: bool = False) -> dict:
+                citation_enum: bool = False, semantic_contract: bool = False) -> dict:
     citation_ids = [r["id"] for r in records] if citation_enum else None
     schema = json.dumps(native_task_schema(case["family"], citation_ids), sort_keys=True, separators=(",", ":"))
     label = "Output JSON schema" if json_label else "Output schema"
-    return validate_task_input({"family": case["family"],
-                                "question": case["query"] + f"\n{label} (structure only):\n" + schema,
+    question = case["query"]
+    if semantic_contract:
+        question += "\nSemantic contract:\n" + PROOF_INSTRUCTIONS.strip()
+    question += f"\n{label} (structure only):\n" + schema
+    return validate_task_input({"family": case["family"], "question": question,
                                 "records": [{"id": r["id"], "text": source_text(r)} for r in records]})
 
 
 def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
-    if spec not in (SPEC, SPEC_V11, SPEC_V12):
+    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13):
         raise ValueError("Unknown calibration protocol; version it before spending.")
     cfg = config(cfg)
     cases, cells = [], []
@@ -131,7 +137,8 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
             views.append(("partial-chain", [r for r in records if r["kind"] != "line-pool"]))
         for condition, supplied in views:
             task = public_task(case, supplied, json_label=spec != SPEC,
-                               citation_enum=spec.get("citation_enum", False))
+                               citation_enum=spec.get("citation_enum", False),
+                               semantic_contract=spec.get("semantic_contract", False))
             prompt = json.dumps(task, ensure_ascii=False, sort_keys=True)
             visible = [r["id"] for r in case["records"] if source_text(r) in prompt]
             if visible != [r["id"] for r in supplied]:
@@ -154,8 +161,8 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
     if len(cases) != 10 or len(cells) != 30 or len({c["id"] for c in cells}) != 30:
         raise ValueError("Missing or duplicate frozen cases.")
     return {"method": spec["schema"], "spec": spec, "config": cfg, "parent": PARENT,
-            "retained_failed": STOPPED_V1 if spec in (SPEC_V11, SPEC_V12) else None,
-            "retained_completed": COMPLETED_V11 if spec == SPEC_V12 else None,
+            "retained_failed": STOPPED_V1 if spec != SPEC else None,
+            "retained_completed": COMPLETED_V11 if spec in (SPEC_V12, SPEC_V13) else None,
             "cases": cases, "cells": cells, "runtime_sha256": runtime_hashes(),
             "budget": {"max_calls": 30, "max_output_tokens": 122880, "retries": 0,
                        "input_utf8_bytes": sum(c["input_utf8_bytes"] for c in cells),
@@ -166,7 +173,8 @@ def source_revision() -> str:
     paths = [str(p.relative_to(REPO)) for p in sorted((REPO / "great_scratchpad").glob("*.py"))]
     paths += ["scenarios/luna_native_contract_v1.json", "docs/luna-native-contract-v1-protocol.md",
               "scenarios/luna_native_contract_v11.json", "docs/luna-native-contract-v11-protocol.md",
-              "scenarios/luna_native_contract_v12.json", "docs/luna-native-contract-v12-protocol.md"]
+              "scenarios/luna_native_contract_v12.json", "docs/luna-native-contract-v12-protocol.md",
+              "scenarios/luna_native_contract_v13.json", "docs/luna-native-contract-v13-protocol.md"]
     subprocess.run(["git", "ls-files", "--error-unmatch", *paths], cwd=REPO, capture_output=True, check=True)
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *paths], cwd=REPO, check=True)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
@@ -176,7 +184,7 @@ def source_revision() -> str:
 def prepare(out: Path, runs_root: Path, spec_path: Path, cfg_path: str,
             max_calls: int, max_output: int, max_input_bytes: int) -> dict:
     spec = strict_json(spec_path.read_text())
-    if spec not in (SPEC, SPEC_V11, SPEC_V12):
+    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13):
         raise ValueError("Protocol changed; version it before spending.")
     if spec == SPEC:
         raise ValueError("V1 is a retained stopped campaign; prepare fresh cases under V1.2 instead.")
@@ -201,10 +209,10 @@ def load_plan(out: Path, digest: str, cfg_path: str) -> dict:
     cfg = config(load_llm_config(REPO, cfg_path, CONFIG["profile"]))
     if envelope["plan_sha256"] != digest or canonical_json_sha256(plan) != digest:
         raise ValueError("Frozen plan digest mismatch.")
-    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11, SPEC_V12) or PARENT != plan["parent"]
+    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13) or PARENT != plan["parent"]
             or plan["method"] != plan["spec"]["schema"]
-            or plan.get("retained_failed") != (STOPPED_V1 if plan["spec"] in (SPEC_V11, SPEC_V12) else None)
-            or plan.get("retained_completed") != (COMPLETED_V11 if plan["spec"] == SPEC_V12 else None)
+            or plan.get("retained_failed") != (STOPPED_V1 if plan["spec"] != SPEC else None)
+            or plan.get("retained_completed") != (COMPLETED_V11 if plan["spec"] in (SPEC_V12, SPEC_V13) else None)
             or runtime_hashes() != plan["runtime_sha256"]):
         raise ValueError("Runtime, protocol or provider profile changed after freeze.")
     return plan

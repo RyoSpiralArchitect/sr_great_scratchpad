@@ -10,7 +10,7 @@ from unittest.mock import patch
 from great_scratchpad.dialogue import canonical_json_sha256
 from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
-    ARMS, COMPLETED_V11, CONFIG, PARENT, SPEC, SPEC_V11, SPEC_V12, SYSTEM, assess, audit,
+    ARMS, COMPLETED_V11, CONFIG, PARENT, SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SYSTEM, assess, audit,
     build_plan, load_parent, load_plan, outcome, main, prepare, request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
@@ -21,6 +21,7 @@ CFG_PATH = str(REPO / "examples/gpt-6-luna.json")
 SPEC_PATH = REPO / "scenarios/luna_native_contract_v1.json"
 SPEC_V11_PATH = REPO / "scenarios/luna_native_contract_v11.json"
 SPEC_V12_PATH = REPO / "scenarios/luna_native_contract_v12.json"
+SPEC_V13_PATH = REPO / "scenarios/luna_native_contract_v13.json"
 
 
 def parent_fixture():
@@ -37,7 +38,7 @@ class NativeCampaignTests(unittest.TestCase):
     def fixture(self, out, spec=SPEC):
         if spec == SPEC:
             plan = deepcopy(self.plan)
-        elif spec == SPEC_V12:
+        elif spec in (SPEC_V12, SPEC_V13):
             history = parent_fixture()["cases"] + self.plan["cases"] + self.plan_v11["cases"]
             plan = build_plan(CONFIG, {"cases": history}, spec)
         else:
@@ -165,6 +166,36 @@ class NativeCampaignTests(unittest.TestCase):
             self.assertEqual(result["method"], SPEC_V12["schema"])
             self.assertEqual(audit(plan, digest, Path(tmp)), result)
             self.assertEqual(summarize(plan, result)["method"], SPEC_V12["schema"])
+
+    def test_v13_states_the_semantic_contract_to_both_arms_without_enum(self):
+        from great_scratchpad.task_contract import PROOF_INSTRUCTIONS
+        self.assertEqual(json.loads(SPEC_V13_PATH.read_text()), SPEC_V13)
+        self.assertTrue(SPEC_V13["semantic_contract"])
+        self.assertNotIn("citation_enum", SPEC_V13)
+        history = parent_fixture()["cases"] + self.plan["cases"] + self.plan_v11["cases"]
+        plan = build_plan(CONFIG, {"cases": history}, SPEC_V13)
+        self.assertEqual(plan["retained_completed"], COMPLETED_V11)
+        for native in (c for c in plan["cells"] if c["arm"] == "native"):
+            fmt = native["request_params"]["text"]["format"]
+            self.assertTrue(fmt["name"].endswith("_v1"))
+            self.assertFalse(fmt["name"].endswith("_enum_v1"))
+            self.assertNotIn("enum", fmt["schema"]["properties"]["evidence"]["items"])
+            partner = next(c for c in plan["cells"]
+                           if c["id"].rsplit(":", 1)[0] == native["id"].rsplit(":", 1)[0] and c["arm"] == "json-mode")
+            self.assertEqual(partner["prompt"], native["prompt"])
+            head, contract = native["task"]["question"].split("\nSemantic contract:\n", 1)
+            self.assertEqual(head, next(c for c in plan["cases"] if c["id"] == native["case_id"])["query"])
+            self.assertTrue(contract.startswith(PROOF_INSTRUCTIONS.strip()))
+            self.assertIn("\nOutput JSON schema (structure only):\n", contract)
+
+    def test_v13_uses_the_contract_bearing_native_helper_and_control_once_each(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), spec=SPEC_V13)
+            self.assertEqual(calls, 30)
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["method"], SPEC_V13["schema"])
+            self.assertEqual(audit(plan, digest, Path(tmp)), result)
+            self.assertEqual(summarize(plan, result)["method"], SPEC_V13["schema"])
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):
         empty = [c for c in self.plan["cells"] if c["condition"] == "empty"]
