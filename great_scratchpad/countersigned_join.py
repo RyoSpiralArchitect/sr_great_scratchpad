@@ -47,27 +47,32 @@ def handoff_state(case: dict, records: list[dict]) -> dict:
             "support": support, "eligible_ids": support[:], "flags": {}}
 
 
-def handoff_cases(spec: dict):
-    seed = spec["fresh_seed"]
+def handoff_rows(seed: int, active: set):
     rng = random.Random(seed)
     ticket, team, site_base, line_base, code_base = [
         f"{prefix}{rng.randrange(65536):04x}" for prefix in ("Q", "T", "R", "L", "K")]
     sites = [site_base + bit for bit in "01"]
     lines = [line_base + bit for bit in "01"]
     pools = [f"P{i:05x}" for i in rng.sample(range(16**5), 4)]
+    rows = []
+    for i, src in enumerate(sites):
+        rows.append(dict(kind="assignment", src=src, ticket=ticket, team=team))
+        for j in range(2):
+            fields = dict(src=src, team=team, dst=sites[1-j], line=lines[i ^ j], code=code_base + str(j))
+            rows.append(dict(kind="offer", **fields))
+            rows.append({**fields, "kind": "receipt",
+                         "code": fields["code"] if (i, j) in active else code_base + str(j+2)})
+            rows.append({**fields, "kind": "receipt", "src": sites[1-i]})
+            rows.append(dict(kind="line-pool", dst=src, line=lines[j], pool=pools[2*i+j]))
+    return sites, ticket, rows
+
+
+def handoff_cases(spec: dict):
+    seed = spec["fresh_seed"]
     # Each mixed snapshot flips just two receipt digits relative to the balanced one.
     for bundle, active in (("balanced", {(0, 0), (1, 1)}), ("left-gap", {(1, 0), (1, 1)}),
                            ("right-gap", {(0, 0), (0, 1)})):
-        rows = []
-        for i, src in enumerate(sites):
-            rows.append(dict(kind="assignment", src=src, ticket=ticket, team=team))
-            for j in range(2):
-                fields = dict(src=src, team=team, dst=sites[1-j], line=lines[i ^ j], code=code_base + str(j))
-                rows.append(dict(kind="offer", **fields))
-                rows.append({**fields, "kind": "receipt",
-                             "code": fields["code"] if (i, j) in active else code_base + str(j+2)})
-                rows.append({**fields, "kind": "receipt", "src": sites[1-i]})
-                rows.append(dict(kind="line-pool", dst=src, line=lines[j], pool=pools[2*i+j]))
+        sites, ticket, rows = handoff_rows(seed, active)
         random.Random(seed).shuffle(rows)
         for n, r in enumerate(rows, 1):
             r.update(id=f"m{n:03d}", turn=n, text=TEXT[r["kind"]].format(**r))

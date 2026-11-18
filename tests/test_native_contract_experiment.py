@@ -12,7 +12,7 @@ from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
     ARMS, COMPLETED_V11, CONFIG, FLAG_LEXICON, FLAG_SCOPE, PARENT, SPEC, SPEC_V11, SPEC_V12,
     SPEC_V12S, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V16S, SPEC_V17S, SPEC_V18S,
-    SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S, SPEC_V113S, SYSTEM, assess, audit,
+    SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S, SPEC_V113S, SPEC_V114S, SYSTEM, assess, audit,
     build_plan, load_parent, load_plan, outcome, main, prepare, request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
@@ -622,6 +622,58 @@ class NativeCampaignTests(unittest.TestCase):
             self.assertEqual(calls, 12)
             enum, plain = summarize(plan, audit(plan, digest, Path(tmp)))["arms"]
             self.assertEqual((enum["caller_contract_ok"], enum["value_correct"], enum["contract_success"]), (6, 5, 4))
+            self.assertEqual(plain["contract_success"], 6)
+
+    def test_v114s_asof_grid_and_exact_proofs_from_public_rows(self):
+        self.assertEqual(json.loads((REPO / "scenarios/luna_native_contract_v114s.json").read_text()), SPEC_V114S)
+        plan = build_plan(CONFIG, build_plan(CONFIG, {"cases": []}, SPEC_V113S), SPEC_V114S)
+        # Independent read-through of the frozen packet; neither the generator nor scorer gets this key.
+        expected = {
+            (20, 42): ("Pfd5d2", "m017 m013 m018 m022 m001"),
+            (20, 50): (None, "m017 m013 m018 m020 m022"),
+            (20, 60): (None, "m017 m013 m018 m020 m022"),
+            (40, 42): (None, "m017 m013 m018 m022 m005"),
+            (40, 50): ("P2960d", "m017 m013 m018 m020 m022 m005 m014"),
+            (40, 60): (None, "m017 m013 m018 m008 m022 m005"),
+        }
+        rows = plan["cells"][0]["task"]["records"]
+        self.assertEqual(len(rows), 23)
+        seen = set()
+        for a, b in zip(plan["cells"][::2], plan["cells"][1::2], strict=True):
+            enum, plain = (a, b) if a["arm"] == "native-enum" else (b, a)
+            self.assertEqual(enum["prompt"], plain["prompt"])
+            self.assertEqual(enum["task"]["records"], rows)
+            params = deepcopy(enum["request_params"])
+            ids = params["text"]["format"]["schema"]["properties"]["evidence"]["items"].pop("enum")
+            self.assertEqual(ids, sorted(r["id"] for r in rows))
+            self.assertEqual(params, plain["request_params"])
+            case = next(c for c in plan["cases"] if c["id"] == enum["case_id"])
+            dates = case["asof"], case["file_cutoff"]
+            self.assertIn(f"対象日 {dates[0]}、登録締切 {dates[1]}。", enum["task"]["question"])
+            seen.add(dates)
+            value, proof = expected[dates]
+            self.assertEqual(enum["expected"]["value"], value)
+            self.assertEqual(set(enum["expected"]["support"]), set(proof.split()))
+        self.assertEqual(seen, set(expected))
+
+    def test_v114s_rejects_real_but_future_unauthorized_and_superseded_citations(self):
+        def transform(cell, payload):
+            substitutions = {"effective40-filed60": ("m008", "m015"),  # latest filing, not latest effect
+                             "effective40-filed50": ("m020", "m023"),  # wrong issuer
+                             "effective20-filed42": ("m018", "m003")}  # outside cutoffs
+            if cell["arm"] == "native-enum" and cell["condition"] in substitutions:
+                msg = payload["output"][0]["content"][0]
+                old, new = substitutions[cell["condition"]]
+                answer = json.loads(msg["text"])
+                answer["evidence"][answer["evidence"].index(old)] = new
+                msg["text"] = json.dumps(answer)
+            return payload
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), transform, spec=SPEC_V114S)
+            self.assertEqual(calls, 12)
+            enum, plain = summarize(plan, audit(plan, digest, Path(tmp)))["arms"]
+            self.assertEqual((enum["caller_contract_ok"], enum["value_correct"], enum["contract_success"]), (6, 6, 3))
             self.assertEqual(plain["contract_success"], 6)
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):

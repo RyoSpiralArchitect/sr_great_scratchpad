@@ -5,7 +5,7 @@ The historical two-field contract and its scores remain unchanged.
 
 from __future__ import annotations
 
-from . import countersigned_join
+from . import asof_handoff, countersigned_join
 from .grounded_recall import strict_json
 from .memory_task_design import FAMILIES, SYSTEM as LEGACY_SYSTEM, make_case, source_text
 
@@ -115,6 +115,8 @@ def reference_state(case: dict, visible_ids: list[str] | None = None) -> dict:
     records = [r for r in case["records"] if visible_ids is None or r["id"] in visible_ids]
     if case.get("scenario") == countersigned_join.SCENARIO and case["family"] == "distributed-join":
         return countersigned_join.handoff_state(case, records)
+    if case.get("scenario") == asof_handoff.SCENARIO and case["family"] == "distributed-join":
+        return asof_handoff.state(case, records)
     value, support, eligible, flags = None, [], [], {}
     if case["family"] == "decision-update":
         decisions = [r for r in records if r["kind"] == "decision" and r["target"] == case["target"]]
