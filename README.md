@@ -768,6 +768,11 @@ mode 13/15 versus native 12/15. Prose citation strings and an underspecified
 branch-proof obligation remain distinct from schema validity; neither arm
 cleared the 15/15 semantic gate.
 
+In the later [V1.8s standalone comparison](docs/luna-native-contract-v18s-results.md),
+both formats passed 25/25 views, including sources mixed with 54 distractors.
+The [V1.9s protocol](docs/luna-native-contract-v19s-protocol.md) tests a different
+failure: citing a complete chain belonging to a request with a nearly identical ID.
+
 Run the included smoke test:
 
 ```bash

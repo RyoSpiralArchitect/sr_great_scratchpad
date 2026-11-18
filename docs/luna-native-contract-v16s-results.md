@@ -32,11 +32,11 @@ paired: both 25、mean_delta 0.0。**25/25 ゲート達成**。
 
 ## 観測
 
-- **distractor 混在でも引用規律は崩れなかった。** distracted ビューの10件
-  (5 scenarios×2群)では、供給レコードに distractor が混ざっていても
+- **distractor 混在でも引用規律は崩れなかった。** 訂正（2026-11-18）:
+  凍結済み plan の distracted 呼び出しは20件（10 scenarios×2群）。いずれも
   evidence は関連IDのみの部分集合に収まった。distractor を拾う失敗は0件。
 - **enum なしでも散文引用は今回出なかった。** ただし distracted ビューでは
-  関連レコードの数自体が少なく(各 distractor 追加は1〜2件)、ノイズ量は
+  関連レコード3件に distractor 18件を追加した合計21件で、ノイズ量は
   authored calibration の範囲。noise 負荷を上げた版は別 spec が必要。
 - **意味契約+lexicon+scope の組み合わせは50/50 を通した。** V1.5s で残った
   native の散文引用失敗が今回出なかったのは、ケース差(新 seed)・
@@ -64,6 +64,8 @@ usage 不明0件。50 calls で逐次約135秒(速度比較の意図なし)。
 | `summary.json` | `0f62fd7191946bd16a24812b010073137d63abc481425b2301a8da44d34491b6` |
 
 run ディレクトリは `.great_scratchpad/runs/luna-native-contract-v16s-20261115`。
+旧 summary の集計フラグは15件固定だったため、表の25/25は
+各群25件の `contract_success` に基づく。元のファイルは変更していない。
 
 ## 次の磨き方
 

@@ -15,6 +15,7 @@ from .grounded_recall import runtime_hashes, strict_json
 from .llm import LLMResponseError, api_key_from_config, call_llm_result, estimate_token_count
 from .luna_uncertainty import CONFIG, config, failure_tags, paired_counts, record_usage, sha
 from .memory_task_design import source_text
+from .native_join_contrast import join_contrast_cases
 from .storage import load_llm_config, now_iso
 from .structured_tasks import (
     SYSTEM, TaskContractError, call_structured_task, native_task_format, native_task_schema, validate_task_answer,
@@ -55,6 +56,12 @@ SPEC_V16S = {**SPEC_V11, "schema": "luna-native-contract-v16s", "fresh_seed": 26
 SPEC_V17S = {**SPEC_V15S, "schema": "luna-native-contract-v17s", "fresh_seed": 26110320}
 SPEC_V18S = {**SPEC_V16S, "schema": "luna-native-contract-v18s", "fresh_seed": 26110321,
              "distractor_count": 54}
+SPEC_V19S = {**SPEC_V15S, "schema": "luna-native-contract-v19s", "fresh_seed": 26110322,
+             "source_scenarios": ["complete-join", "pending-join"], "partial_scenarios": ["complete-join"],
+             "empty_scenarios": [], "decoy_chains": 6, "id_distances": ["far", "near"], "max_calls": 12,
+             "future_gate": "all 6 views pass both caller and semantic contracts; no retrieval pilot authorized"}
+SUPPORTED_SPECS = (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S,
+                   SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S, SPEC_V19S)
 FLAG_LEXICON = ("\nFlag lexicon: 有効 = enabled; 無効 = disabled; 未確認 = unknown; "
                 "a flag not stated in the supplied request = unobserved.")
 FLAG_SCOPE = "\nFor non-routing task families, use flags: {}."
@@ -144,16 +151,13 @@ def public_task(case: dict, records: list[dict], json_label: bool = False,
                                 "records": [{"id": r["id"], "text": source_text(r)} for r in records]})
 
 
-def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
-    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S):
-        raise ValueError("Unknown calibration protocol; version it before spending.")
-    cfg = config(cfg)
-    cases, cells = [], []
-    view_index = 0
+def campaign_views(spec: dict):
+    if spec == SPEC_V19S:
+        yield from join_contrast_cases(spec)
+        return
     for scenario in CALIBRATION_CASES:
         case = make_state_case(spec["fresh_seed"], scenario, "native-fresh",
                                spec.get("distractor_count", 18))
-        cases.append(case)
         records = [r for r in case["records"] if r["kind"] != "distractor"]
         views = [("source", records)]
         if scenario in spec["empty_scenarios"]:
@@ -164,6 +168,18 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
             views.append(("partial-chain", [r for r in records if r["kind"] != "line-pool"]))
         if scenario in spec.get("distracted_scenarios", ()):
             views.append(("distracted", list(case["records"])))
+        yield case, views
+
+
+def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
+    if spec not in SUPPORTED_SPECS:
+        raise ValueError("Unknown calibration protocol; version it before spending.")
+    cfg = config(cfg)
+    cases, cells = [], []
+    view_index = 0
+    for case, views in campaign_views(spec):
+        cases.append(case)
+        scenario = case["scenario"]
         for condition, supplied in views:
             task = public_task(case, supplied, json_label=spec != SPEC,
                                citation_enum=spec.get("citation_enum", False),
@@ -189,7 +205,7 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
     old = parent_plan["cases"]
     if any({c[field] for c in cases} & {c[field] for c in old} for field in ("seed", "id", "target")):
         raise ValueError("Fresh case identities overlap the retained parent.")
-    if (len(cases) != 10 or len(cells) != spec["max_calls"]
+    if (len({c["seed"] for c in cases}) != len(spec["source_scenarios"]) or len(cells) != spec["max_calls"]
             or len({c["id"] for c in cells}) != len(cells)):
         raise ValueError("Missing or duplicate frozen cases.")
     return {"method": spec["schema"], "spec": spec, "config": cfg,
@@ -215,7 +231,8 @@ def source_revision() -> str:
               "scenarios/luna_native_contract_v15s.json", "docs/luna-native-contract-v15s-protocol.md",
               "scenarios/luna_native_contract_v16s.json", "docs/luna-native-contract-v16s-protocol.md",
               "scenarios/luna_native_contract_v17s.json", "docs/luna-native-contract-v17s-protocol.md",
-              "scenarios/luna_native_contract_v18s.json", "docs/luna-native-contract-v18s-protocol.md"]
+              "scenarios/luna_native_contract_v18s.json", "docs/luna-native-contract-v18s-protocol.md",
+              "scenarios/luna_native_contract_v19s.json", "docs/luna-native-contract-v19s-protocol.md"]
     subprocess.run(["git", "ls-files", "--error-unmatch", *paths], cwd=REPO, capture_output=True, check=True)
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *paths], cwd=REPO, check=True)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
@@ -225,7 +242,7 @@ def source_revision() -> str:
 def prepare(out: Path, runs_root: Path, spec_path: Path, cfg_path: str,
             max_calls: int, max_output: int, max_input_bytes: int) -> dict:
     spec = strict_json(spec_path.read_text())
-    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S):
+    if spec not in SUPPORTED_SPECS:
         raise ValueError("Protocol changed; version it before spending.")
     if spec == SPEC:
         raise ValueError("V1 is a retained stopped campaign; prepare fresh cases under V1.2 instead.")
@@ -251,7 +268,7 @@ def load_plan(out: Path, digest: str, cfg_path: str) -> dict:
     if envelope["plan_sha256"] != digest or canonical_json_sha256(plan) != digest:
         raise ValueError("Frozen plan digest mismatch.")
     expected_parent = None if plan["spec"].get("standalone") else PARENT
-    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S)
+    if (cfg != plan["config"] or plan["spec"] not in SUPPORTED_SPECS
             or plan["parent"] != expected_parent or plan["method"] != plan["spec"]["schema"]
             or plan.get("retained_failed") != (
                 None if plan["spec"].get("standalone") else (STOPPED_V1 if plan["spec"] != SPEC else None))
@@ -410,14 +427,15 @@ def summarize(plan: dict, result: dict) -> dict:
     saved = {c["id"]: c for c in result["cells"]}
     arms, pairs = [], []
     for arm in ARMS:
-        rows = [c for c in plan["cells"] if c["arm"] == arm and c["id"] in saved]
+        planned = [c for c in plan["cells"] if c["arm"] == arm]
+        rows = [c for c in planned if c["id"] in saved]
         scores = [saved[c["id"]]["assessment"] for c in rows]
         usage = empty_usage()
         for cell in rows:
             add_usage(usage, saved[cell["id"]]["known_usage"])
-        arms.append({"arm": arm, "attempted": len(rows), "planned": len(plan["cells"]) // 2,
+        arms.append({"arm": arm, "attempted": len(rows), "planned": len(planned),
                      **{k: sum(bool(s.get(k)) for s in scores) for k in METRICS},
-                     "all_15_passed": len(scores) == 15 and all(s["contract_success"] for s in scores),
+                     f"all_{len(planned)}_passed": len(scores) == len(planned) and all(s["contract_success"] for s in scores),
                      "known_usage": usage,
                      "unavailable_usage_calls": sum(not saved[c["id"]]["usage_reported"] for c in rows),
                      "failure_tags": dict(Counter(t for s in scores for t in s["failure_tags"]))})
@@ -430,7 +448,8 @@ def summarize(plan: dict, result: dict) -> dict:
             "paired_strict": paired_counts(pairs) if pairs else {"pairs": 0, "outcomes": {}, "mean_delta": None},
             "known_usage": result["known_usage"],
             "unavailable_usage_calls": result["unavailable_usage_calls"], "pilot_calls": 0,
-            "scope": "15 dependent views of ten fresh authored cases; not retrieval efficacy or adoption evidence.",
+            "scope": (f"{len(plan['cells']) // 2} dependent views of {len(plan['spec']['source_scenarios'])} "
+                      "fresh authored cases; not retrieval efficacy or adoption evidence."),
             "cases": [{k: c[k] for k in ("id", "arm", "scenario", "family", "condition")} | saved[c["id"]]
                       for c in plan["cells"] if c["id"] in saved]}
 

@@ -12,7 +12,7 @@ from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
     ARMS, COMPLETED_V11, CONFIG, FLAG_LEXICON, FLAG_SCOPE, PARENT, SPEC, SPEC_V11, SPEC_V12,
     SPEC_V12S, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V16S, SPEC_V17S, SPEC_V18S,
-    SYSTEM, assess, audit,
+    SPEC_V19S, SYSTEM, assess, audit,
     build_plan, load_parent, load_plan, outcome, main, prepare, request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
@@ -384,7 +384,74 @@ class NativeCampaignTests(unittest.TestCase):
             self.assertEqual(result["status"], "complete")
             self.assertEqual(result["method"], SPEC_V18S["schema"])
             self.assertEqual(audit(plan, digest, Path(tmp)), result)
-            self.assertEqual(summarize(plan, result)["method"], SPEC_V18S["schema"])
+            report = summarize(plan, result)
+            self.assertTrue(all(a["all_25_passed"] for a in report["arms"]))
+            self.assertTrue(report["scope"].startswith("25 dependent views of 10"))
+            prefix = {**result, "status": "stopped", "cells": result["cells"][:30]}
+            self.assertFalse(any(a["all_25_passed"] for a in summarize(plan, prefix)["arms"]))
+
+    def test_v19s_changes_only_decoy_keys_and_preserves_disconnected_chains(self):
+        self.assertEqual(json.loads((REPO / "scenarios/luna_native_contract_v19s.json").read_text()), SPEC_V19S)
+        plan = build_plan(CONFIG, {"cases": []}, SPEC_V19S)
+        self.assertEqual(plan["budget"]["max_output_tokens"], 49152)
+        self.assertLessEqual(plan["budget"]["input_utf8_bytes"], 200000)
+        for scenario in SPEC_V19S["source_scenarios"]:
+            far, near = sorted((c for c in plan["cases"] if c["scenario"] == scenario), key=lambda c: c["id"])
+            self.assertEqual(far["truth"], near["truth"])
+            self.assertEqual(far["target"], near["target"])
+            for case, distance in ((far, 5), (near, 1)):
+                records = case["records"]
+                assigned = {r["target"]: r["team"] for r in records if r["kind"] == "assignment"}
+                links = {r["team"]: r["line"] for r in records if r["kind"] == "team-line"}
+                ends = {r["line"]: r.get("pool") for r in records if r["kind"] in ("line-pool", "pending")}
+                self.assertEqual(len(assigned), 7)
+                self.assertEqual(set(assigned.values()), set(links))
+                self.assertEqual(set(links.values()), set(ends))
+                self.assertEqual(len(set(ends.values())), 7)
+                target = case["target"]
+                true_keys = (target, assigned[target], links[assigned[target]])
+                for ticket, team in assigned.items():
+                    if ticket != target:
+                        for key, real in zip((ticket, team, links[team]), true_keys):
+                            self.assertEqual(len(key), len(real))
+                            self.assertEqual(sum(x != y for x, y in zip(key, real)), distance)
+            for a, b in zip(far["records"], near["records"]):
+                self.assertEqual((a["id"], a["turn"], a["kind"], a.get("pool")),
+                                 (b["id"], b["turn"], b["kind"], b.get("pool")))
+                if a["id"] in far["truth"]["support"]:
+                    self.assertEqual(a, b)
+        for a, b in zip(plan["cells"][::2], plan["cells"][1::2]):
+            self.assertEqual(a["prompt"], b["prompt"])
+            self.assertEqual(a["expected"], b["expected"])
+            self.assertEqual(len(a["visible_ids"]), 20 if a["condition"].endswith("missing") else 21)
+            self.assertEqual(len(a["expected"]["support"]), 2 if a["condition"].endswith("missing") else 3)
+            self.assertEqual(a["expected"]["status"], "known" if (
+                a["scenario"] == "complete-join" and a["condition"].endswith("source")) else "unknown")
+
+    def test_v19s_rejects_a_decoy_citation_even_when_the_value_is_correct(self):
+        plan = build_plan(CONFIG, {"cases": []}, SPEC_V19S)
+        cell = next(c for c in plan["cells"] if c["condition"] == "near-missing")
+        case = next(c for c in plan["cases"] if c["id"] == cell["case_id"])
+        decoy = next(r for r in case["records"] if r["kind"] == "line-pool" and r["id"] in cell["visible_ids"])
+        for value in (None, decoy["pool"]):
+            raw = json.dumps({"status": "unknown" if value is None else "known", "value": value,
+                              "flags": {}, "evidence": [*cell["expected"]["support"], decoy["id"]]})
+            receipt = {"unsafe_response": False, "llm": {"content": raw, "response_model": CONFIG["model"],
+                       "adapter": "openai-responses", "response_status": "completed", "request_params": cell["request_params"]}}
+            score = assess(plan, cell, receipt)
+            self.assertTrue(score["caller_contract_ok"])
+            self.assertEqual(score["value_correct"], value is None)
+            self.assertFalse(score["citations_relevant"])
+            self.assertFalse(score["contract_success"])
+
+    def test_v19s_exercises_both_adapters_without_provider_spend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), spec=SPEC_V19S)
+            self.assertEqual(calls, 12)
+            self.assertEqual(audit(plan, digest, Path(tmp)), result)
+            report = summarize(plan, result)
+            self.assertTrue(all(a["all_6_passed"] for a in report["arms"]))
+            self.assertTrue(report["scope"].startswith("6 dependent views of 2"))
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):
         empty = [c for c in self.plan["cells"] if c["condition"] == "empty"]
