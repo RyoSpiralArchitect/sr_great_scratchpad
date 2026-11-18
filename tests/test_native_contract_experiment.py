@@ -12,7 +12,7 @@ from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
     ARMS, COMPLETED_V11, CONFIG, FLAG_LEXICON, FLAG_SCOPE, PARENT, SPEC, SPEC_V11, SPEC_V12,
     SPEC_V12S, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V16S, SPEC_V17S, SPEC_V18S,
-    SPEC_V19S, SPEC_V110S, SYSTEM, assess, audit,
+    SPEC_V19S, SPEC_V110S, SPEC_V111S, SYSTEM, assess, audit,
     build_plan, load_parent, load_plan, outcome, main, prepare, request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
@@ -481,15 +481,49 @@ class NativeCampaignTests(unittest.TestCase):
                 self.assertEqual(a[field], partner[field])
             self.assertEqual(a["task"]["question"], partner["task"]["question"])
 
+    def test_v111s_removes_only_the_selected_edge_and_requires_reachable_evidence(self):
+        spec_file = REPO / "scenarios/luna_native_contract_v111s.json"
+        self.assertEqual(json.loads(spec_file.read_text()), SPEC_V111S)
+        plan = build_plan(CONFIG, build_plan(CONFIG, {"cases": []}, SPEC_V110S), SPEC_V111S)
+        for distance in ("near", "far"):
+            for arm in ARMS:
+                cells = {c["condition"].removeprefix(distance + "-"): c for c in plan["cells"]
+                         if c["arm"] == arm and c["condition"].startswith(distance + "-")}
+                full = cells["source"]
+                assignment, link, endpoint = full["expected"]["support"]
+                self.assertEqual(len(full["visible_ids"]), 21)
+                for view, omitted, support in (("missing", endpoint, [assignment, link]),
+                                                ("missing-link", link, [assignment])):
+                    cell = cells[view]
+                    self.assertEqual(cell["task"], {**full["task"], "records": [
+                        r for r in full["task"]["records"] if r["id"] != omitted]})
+                    self.assertEqual(cell["expected"], {"status": "unknown", "value": None, "flags": {},
+                                                        "support": support, "eligible_ids": support})
+                    self.assertEqual(cell["request_params"], full["request_params"])
+                gap = cells["missing-link"]
+                pool = full["expected"]["value"]
+                self.assertTrue(any(r["id"] == endpoint and pool in r["text"] for r in gap["task"]["records"]))
+                for value in (None, pool):
+                    raw = json.dumps({"status": "unknown" if value is None else "known", "value": value,
+                                      "flags": {}, "evidence": [assignment, endpoint]})
+                    receipt = {"unsafe_response": False, "llm": {"content": raw, "response_model": CONFIG["model"],
+                               "adapter": "openai-responses", "response_status": "completed",
+                               "request_params": gap["request_params"]}}
+                    score = assess(plan, gap, receipt)
+                    self.assertTrue(score["caller_contract_ok"] and score["citations_visible"])
+                    self.assertEqual(score["value_correct"], value is None)
+                    self.assertFalse(score["citations_relevant"])
+                    self.assertFalse(score["contract_success"])
+
     def test_join_contrasts_exercise_both_adapters_without_provider_spend(self):
-        for spec in (SPEC_V19S, SPEC_V110S):
+        for spec in (SPEC_V19S, SPEC_V110S, SPEC_V111S):
             with self.subTest(spec=spec["schema"]), tempfile.TemporaryDirectory() as tmp:
                 plan, digest, result, calls = self.execute(Path(tmp), spec=spec)
                 self.assertEqual(calls, 12)
                 self.assertEqual(audit(plan, digest, Path(tmp)), result)
                 report = summarize(plan, result)
                 self.assertTrue(all(a["all_6_passed"] for a in report["arms"]))
-                self.assertTrue(report["scope"].startswith("6 dependent views of 2"))
+                self.assertTrue(report["scope"].startswith(f"6 dependent views of {len(spec['source_scenarios'])}"))
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):
         empty = [c for c in self.plan["cells"] if c["condition"] == "empty"]

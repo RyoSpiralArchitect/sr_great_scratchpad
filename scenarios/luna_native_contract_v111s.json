@@ -1,0 +1,22 @@
+{
+  "arms": ["native", "json-mode"],
+  "decoy_chains": 6,
+  "empty_scenarios": [],
+  "flag_lexicon": true,
+  "flag_scope": true,
+  "fresh_seed": 26110324,
+  "future_gate": "all 6 views pass both caller and semantic contracts; no retrieval pilot authorized",
+  "id_distances": ["far", "near"],
+  "line_only_contrast": true,
+  "max_calls": 12,
+  "missing_link_scenarios": ["complete-join"],
+  "model": "gpt-6-luna",
+  "partial_scenarios": ["complete-join"],
+  "per_call_output_tokens": 4096,
+  "pilot_calls": 0,
+  "retries": 0,
+  "schema": "luna-native-contract-v111s",
+  "semantic_contract": true,
+  "source_scenarios": ["complete-join"],
+  "standalone": true
+}

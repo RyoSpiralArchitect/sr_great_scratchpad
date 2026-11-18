@@ -22,7 +22,7 @@ def join_contrast_cases(spec: dict):
         for distance in spec["id_distances"][::1 if index % 2 == 0 else -1]:
             upstream_distance = "far" if spec.get("line_only_contrast") else distance
             records = [dict(r) for r in original["records"]]
-            target_endpoint = records[-1]
+            _, target_link, target_endpoint = records
             pools = {endpoint.get("pool")}
             for i in range(1, spec["decoy_chains"] + 1):
                 ticket = _other_id(original["target"], i, upstream_distance)
@@ -48,4 +48,6 @@ def join_contrast_cases(spec: dict):
             views = [(f"{distance}-source", records)]
             if scenario in spec["partial_scenarios"]:
                 views.append((f"{distance}-missing", [r for r in records if r is not target_endpoint]))
+            if scenario in spec.get("missing_link_scenarios", ()):
+                views.append((f"{distance}-missing-link", [r for r in records if r is not target_link]))
             yield case, views
