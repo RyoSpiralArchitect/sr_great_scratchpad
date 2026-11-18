@@ -775,6 +775,9 @@ failure: citing a complete chain belonging to a request with a nearly identical 
 In the [12-call V1.9s run](docs/luna-native-contract-v19s-results.md), neither
 format borrowed a decoy endpoint or citation. Both distinguished missing and
 explicitly pending endpoints by the evidence they cited for an unknown value.
+The [V1.10s run](docs/luna-native-contract-v110s-results.md) isolated similarity
+to the line ID alone. Both formats passed all six fresh views, including when
+only other lines had confirmed pool records.
 
 Run the included smoke test:
 
