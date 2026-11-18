@@ -1,0 +1,16 @@
+{
+  "arms": ["native-enum", "native"],
+  "empty_scenarios": [],
+  "flag_scope": true,
+  "fresh_seed": 26110326,
+  "future_gate": "all 6 views pass both caller and semantic contracts; no retrieval pilot authorized",
+  "max_calls": 12,
+  "model": "gpt-6-luna",
+  "partial_scenarios": [],
+  "per_call_output_tokens": 4096,
+  "pilot_calls": 0,
+  "retries": 0,
+  "schema": "luna-native-contract-v113s",
+  "source_scenarios": ["countersigned-join"],
+  "standalone": true
+}

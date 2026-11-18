@@ -12,7 +12,7 @@ from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
     ARMS, COMPLETED_V11, CONFIG, FLAG_LEXICON, FLAG_SCOPE, PARENT, SPEC, SPEC_V11, SPEC_V12,
     SPEC_V12S, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V16S, SPEC_V17S, SPEC_V18S,
-    SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S, SYSTEM, assess, audit,
+    SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S, SPEC_V113S, SYSTEM, assess, audit,
     build_plan, load_parent, load_plan, outcome, main, prepare, request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
@@ -565,6 +565,64 @@ class NativeCampaignTests(unittest.TestCase):
             self.assertEqual((enum["caller_contract_ok"], plain["caller_contract_ok"]), (6, 5))
             self.assertEqual((enum["value_correct"], plain["value_correct"]), (6, 6))
             self.assertEqual((enum["contract_success"], plain["contract_success"]), (5, 5))
+
+    def test_v113s_matches_hand_checked_proofs_and_controlled_public_differences(self):
+        self.assertEqual(json.loads((REPO / "scenarios/luna_native_contract_v113s.json").read_text()), SPEC_V113S)
+        prior = build_plan(CONFIG, {"cases": []}, SPEC_V112S)
+        plan = build_plan(CONFIG, prior, SPEC_V113S)
+        # Read directly from the public rows, not computed by the matching oracle.
+        keys = {
+            "balanced-Rdc0c0": ("P9c41c", "m003 m004 m010 m016"),
+            "balanced-Rdc0c1": ("P5eaba", "m001 m006 m015 m008"),
+            "left-gap-Rdc0c0": (None, "m003 m004 m005"),
+            "left-gap-Rdc0c1": (None, "m001 m006 m015 m013 m002"),
+            "right-gap-Rdc0c0": (None, "m003 m004 m010 m005 m017"),
+            "right-gap-Rdc0c1": (None, "m001 m006 m013"),
+        }
+        packets = {}
+        for a, b in zip(plan["cells"][::2], plan["cells"][1::2], strict=True):
+            self.assertEqual(a["task"], b["task"])
+            enum, plain = (a, b) if a["arm"] == "native-enum" else (b, a)
+            params = deepcopy(enum["request_params"])
+            ids = params["text"]["format"]["schema"]["properties"]["evidence"]["items"].pop("enum")
+            self.assertEqual(sorted(enum["visible_ids"]), ids)
+            self.assertEqual(len(ids), 18)
+            self.assertEqual(params, plain["request_params"])
+            value, proof = keys[a["condition"]]
+            self.assertEqual(a["expected"]["value"], value)
+            self.assertEqual(set(a["expected"]["support"]), set(proof.split()))
+            self.assertEqual(set(a["expected"]["eligible_ids"]), set(proof.split()))
+            bundle, site = a["condition"].rsplit("-", 1)
+            rows = a["task"]["records"]
+            self.assertEqual(rows, packets.setdefault(bundle, rows))
+            self.assertEqual(a["task"]["question"].splitlines()[0], f"照会：台帳 {site} の依頼 Q8780 の実行プールは？")
+        for bundle in ("left-gap", "right-gap"):
+            self.assertEqual([r["id"] for r in packets[bundle]], [r["id"] for r in packets["balanced"]])
+            edits = [(a["text"], b["text"]) for a, b in zip(packets[bundle], packets["balanced"], strict=True) if a != b]
+            self.assertEqual(len(edits), 2)
+            for x, y in edits:
+                self.assertIn("受領：", x)
+                self.assertEqual(sum(c != d for c, d in zip(x, y, strict=True)), 1)
+
+    def test_v113s_supplied_but_wrong_scope_and_conflict_tiebreak_fail(self):
+        def transform(cell, payload):
+            if cell["arm"] != "native-enum":
+                return payload
+            msg = payload["output"][0]["content"][0]
+            a = json.loads(msg["text"])
+            if cell["condition"] == "balanced-Rdc0c0":
+                a["value"] = "P5eaba"
+                a["evidence"] = ["m001", "m006", "m015", "m008"]
+            if cell["condition"] == "right-gap-Rdc0c0":
+                a["evidence"] = ["m003", "m004", "m010"]
+            msg["text"] = json.dumps(a)
+            return payload
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), transform, spec=SPEC_V113S)
+            self.assertEqual(calls, 12)
+            enum, plain = summarize(plan, audit(plan, digest, Path(tmp)))["arms"]
+            self.assertEqual((enum["caller_contract_ok"], enum["value_correct"], enum["contract_success"]), (6, 5, 4))
+            self.assertEqual(plain["contract_success"], 6)
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):
         empty = [c for c in self.plan["cells"] if c["condition"] == "empty"]

@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import time
 
+from . import countersigned_join
 from .dialogue import add_usage, append_jsonl, canonical_json_sha256, empty_usage
 from .experiments import write_manifest
 from .grounded_recall import runtime_hashes, strict_json
@@ -66,8 +67,12 @@ SPEC_V111S = {**SPEC_V110S, "schema": "luna-native-contract-v111s", "fresh_seed"
               "source_scenarios": ["complete-join"], "missing_link_scenarios": ["complete-join"]}
 SPEC_V112S = {**SPEC_V111S, "schema": "luna-native-contract-v112s", "fresh_seed": 26110325,
               "arms": ["native-enum", "native"]}
+SPEC_V113S = {**SPEC, "schema": "luna-native-contract-v113s", "fresh_seed": 26110326,
+              "arms": SPEC_V112S["arms"], "source_scenarios": [countersigned_join.SCENARIO],
+              "empty_scenarios": [], "partial_scenarios": [], "standalone": True, "flag_scope": True,
+              "max_calls": 12, "future_gate": SPEC_V112S["future_gate"]}
 SUPPORTED_SPECS = (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S,
-                   SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S, SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S)
+                   SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S, SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S, SPEC_V113S)
 FLAG_LEXICON = ("\nFlag lexicon: 有効 = enabled; 無効 = disabled; 未確認 = unknown; "
                 "a flag not stated in the supplied request = unobserved.")
 FLAG_SCOPE = "\nFor non-routing task families, use flags: {}."
@@ -158,6 +163,9 @@ def public_task(case: dict, records: list[dict], json_label: bool = False,
 
 
 def campaign_views(spec: dict):
+    if spec == SPEC_V113S:
+        yield from countersigned_join.handoff_cases(spec)
+        return
     if spec in (SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S):
         yield from join_contrast_cases(spec)
         return
@@ -241,7 +249,8 @@ def source_revision() -> str:
               "scenarios/luna_native_contract_v19s.json", "docs/luna-native-contract-v19s-protocol.md",
               "scenarios/luna_native_contract_v110s.json", "docs/luna-native-contract-v110s-protocol.md",
               "scenarios/luna_native_contract_v111s.json", "docs/luna-native-contract-v111s-protocol.md",
-              "scenarios/luna_native_contract_v112s.json", "docs/luna-native-contract-v112s-protocol.md"]
+              "scenarios/luna_native_contract_v112s.json", "docs/luna-native-contract-v112s-protocol.md",
+              "scenarios/luna_native_contract_v113s.json", "docs/luna-native-contract-v113s-protocol.md"]
     subprocess.run(["git", "ls-files", "--error-unmatch", *paths], cwd=REPO, capture_output=True, check=True)
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *paths], cwd=REPO, check=True)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
