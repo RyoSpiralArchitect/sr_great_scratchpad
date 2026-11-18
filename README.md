@@ -790,6 +790,10 @@ In the [two-register handoff challenge](docs/luna-native-contract-v113s-results.
 all 12 responses used bare supplied IDs. One no-enum answer nevertheless joined
 an offer to a receipt with a different code and reported an unlicensed pool;
 the enum arm abstained on that pair. Both arms handled both double agreements.
+In the [two-clock handoff challenge](docs/luna-native-contract-v114s-results.md),
+strict scores were 3/6 with an enum and 1/6 without. The enum arm repeatedly
+cited a filed receipt that was not yet effective; one no-enum request reached
+its output cap without an answer. Neither arm cleared the six-view gate.
 
 Run the included smoke test:
 
