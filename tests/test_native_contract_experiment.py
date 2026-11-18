@@ -12,7 +12,7 @@ from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
     ARMS, COMPLETED_V11, CONFIG, FLAG_LEXICON, FLAG_SCOPE, PARENT, SPEC, SPEC_V11, SPEC_V12,
     SPEC_V12S, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V16S, SPEC_V17S, SPEC_V18S,
-    SPEC_V19S, SPEC_V110S, SPEC_V111S, SYSTEM, assess, audit,
+    SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S, SYSTEM, assess, audit,
     build_plan, load_parent, load_plan, outcome, main, prepare, request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
@@ -60,13 +60,13 @@ class NativeCampaignTests(unittest.TestCase):
         return plan, digest
 
     def provider(self, plan, transform=None):
-        lookup = {(c["prompt"], c["request_params"]["text"]["format"]["type"]): c for c in plan["cells"]}
+        lookup = {c["request_sha256"]: c for c in plan["cells"]}
 
         def call(req, **kwargs):
             body = json.loads(req.data)
             if plan["spec"] != SPEC:
                 self.assertIn("json", body["input"].lower())
-            cell = lookup[(body["input"], body["text"]["format"]["type"])]
+            cell = lookup[canonical_json_sha256(body)]
             self.assertEqual(body, {**cell["request_params"], "input": cell["prompt"], "instructions": SYSTEM})
             self.assertEqual(canonical_json_sha256(body), cell["request_sha256"])
             expected = cell["expected"]
@@ -524,6 +524,47 @@ class NativeCampaignTests(unittest.TestCase):
                 report = summarize(plan, result)
                 self.assertTrue(all(a["all_6_passed"] for a in report["arms"]))
                 self.assertTrue(report["scope"].startswith(f"6 dependent views of {len(spec['source_scenarios'])}"))
+
+    def test_v112s_pairs_differ_only_by_the_visible_id_enum(self):
+        spec = json.loads((REPO / "scenarios/luna_native_contract_v112s.json").read_text())
+        self.assertEqual(spec, SPEC_V112S)
+        plan = build_plan(CONFIG, build_plan(CONFIG, {"cases": []}, SPEC_V111S), spec)
+        self.assertEqual(len(plan["cells"]), 12)
+        for i, (a, b) in enumerate(zip(plan["cells"][::2], plan["cells"][1::2], strict=True)):
+            self.assertEqual([a["arm"], b["arm"]], spec["arms"][::1 if i % 2 == 0 else -1])
+            enum, plain = (a, b) if a["arm"] == "native-enum" else (b, a)
+            for key in ("prompt", "system", "task", "visible_ids", "expected", "case_id", "condition"):
+                self.assertEqual(enum[key], plain[key])
+            params = deepcopy(enum["request_params"])
+            fmt = params["text"]["format"]
+            self.assertTrue(fmt["strict"])
+            self.assertEqual(fmt["type"], "json_schema")
+            ids = fmt["schema"]["properties"]["evidence"]["items"].pop("enum")
+            self.assertEqual(ids, sorted(r["id"] for r in enum["task"]["records"]))
+            self.assertTrue(set(enum["expected"]["support"]) < set(ids))
+            self.assertEqual(params, plain["request_params"])
+
+    def test_v112s_audits_prose_and_unlicensed_bare_ids_without_repair(self):
+        def transform(cell, payload):
+            msg = payload["output"][0]["content"][0]
+            answer = json.loads(msg["text"])
+            if cell["condition"] == "near-missing" and cell["arm"] == "native":
+                answer["evidence"][0] += ": explanation"
+            if cell["condition"] == "far-missing-link" and cell["arm"] == "native-enum":
+                answer["evidence"].append(next(i for i in cell["visible_ids"] if i not in answer["evidence"]))
+            msg["text"] = json.dumps(answer)
+            return payload
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), transform, spec=SPEC_V112S)
+            self.assertEqual(calls, 12)
+            report = summarize(plan, audit(plan, digest, Path(tmp)))
+            self.assertEqual(report["paired_strict"]["outcomes"], {"both": 4, "control-only": 1, "treatment-only": 1})
+            enum, plain = report["arms"]
+            self.assertEqual((enum["arm"], plain["arm"]), ("native-enum", "native"))
+            self.assertEqual((enum["caller_contract_ok"], plain["caller_contract_ok"]), (6, 5))
+            self.assertEqual((enum["value_correct"], plain["value_correct"]), (6, 6))
+            self.assertEqual((enum["contract_success"], plain["contract_success"]), (5, 5))
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):
         empty = [c for c in self.plan["cells"] if c["condition"] == "empty"]

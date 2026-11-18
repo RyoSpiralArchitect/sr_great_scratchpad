@@ -59,8 +59,8 @@ def native_task_schema(family: str, citation_ids: list[str] | None = None) -> di
     }
 
 
-def native_task_format(family: str, citation_ids: list[str] | None = None) -> dict:
-    variant = "enum_v1" if citation_ids is not None else "v1"
+def native_task_format(family: str, citation_ids: list[str] | None = None, *, stable_name: bool = False) -> dict:
+    variant = "enum_v1" if citation_ids is not None and not stable_name else "v1"
     return {"type": "json_schema", "name": f"evidence_state_{family.replace('-', '_')}_{variant}",
             "strict": True, "schema": native_task_schema(family, citation_ids)}
 
@@ -86,9 +86,9 @@ def validate_task_input(task: dict) -> dict:
 
 
 def structured_task_config(cfg: dict, family: str, max_output_tokens: int,
-                           citation_ids: list[str] | None = None) -> dict:
+                           citation_ids: list[str] | None = None, *, stable_name: bool = False) -> dict:
     """Fail before sending for unsupported adapters or conflicting contracts."""
-    response_format = native_task_format(family, citation_ids)
+    response_format = native_task_format(family, citation_ids, stable_name=stable_name)
     if resolve_llm_adapter(cfg, strict=False) != OPENAI_RESPONSES_ADAPTER:
         raise ValueError("Native task contracts currently require the openai-responses adapter; no fallback.")
     if not isinstance(cfg.get("model"), str) or not cfg["model"].strip():
@@ -115,11 +115,11 @@ def validate_task_answer(raw: str, family: str, source_ids: list[str]) -> dict:
 
 
 def call_structured_task(cfg: dict, task: dict, *, max_output_tokens: int,
-                         citation_enum: bool = False) -> dict:
+                         citation_enum: bool = False, stable_name: bool = False) -> dict:
     """Issue one native request, without repair, normalization or memory writes."""
     task = validate_task_input(task)
     citation_ids = [r["id"] for r in task["records"]] if citation_enum else None
-    call_cfg = structured_task_config(cfg, task["family"], max_output_tokens, citation_ids)
+    call_cfg = structured_task_config(cfg, task["family"], max_output_tokens, citation_ids, stable_name=stable_name)
     response_format = call_cfg["response_format"]
     prompt = json.dumps(task, ensure_ascii=False, sort_keys=True)
     result = call_llm_result(call_cfg, prompt, SYSTEM)

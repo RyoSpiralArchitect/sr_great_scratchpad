@@ -1,4 +1,4 @@
-"""Bounded paired JSON-mode/native-schema calibration on fresh public inputs."""
+"""Bounded paired output-contract calibrations on fresh public inputs."""
 
 from __future__ import annotations
 
@@ -64,8 +64,10 @@ SPEC_V110S = {**SPEC_V19S, "schema": "luna-native-contract-v110s", "fresh_seed":
               "line_only_contrast": True}
 SPEC_V111S = {**SPEC_V110S, "schema": "luna-native-contract-v111s", "fresh_seed": 26110324,
               "source_scenarios": ["complete-join"], "missing_link_scenarios": ["complete-join"]}
+SPEC_V112S = {**SPEC_V111S, "schema": "luna-native-contract-v112s", "fresh_seed": 26110325,
+              "arms": ["native-enum", "native"]}
 SUPPORTED_SPECS = (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S,
-                   SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S, SPEC_V19S, SPEC_V110S, SPEC_V111S)
+                   SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S, SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S)
 FLAG_LEXICON = ("\nFlag lexicon: 有効 = enabled; 無効 = disabled; 未確認 = unknown; "
                 "a flag not stated in the supplied request = unobserved.")
 FLAG_SCOPE = "\nFor non-routing task families, use flags: {}."
@@ -129,11 +131,11 @@ def load_parent(runs_root: Path, spec: dict = SPEC) -> dict:
 
 
 def request_params(family: str, arm: str, citation_ids: list[str] | None = None) -> dict:
-    if arm not in ARMS:
+    if arm not in (*ARMS, "native-enum") or (arm == "native-enum" and citation_ids is None):
         raise ValueError("Unknown frozen experiment arm.")
     return {"model": CONFIG["model"], "reasoning": {"effort": CONFIG["reasoning_effort"]},
             "max_output_tokens": SPEC["per_call_output_tokens"], "store": False,
-            "text": {"format": native_task_format(family, citation_ids) if arm == "native"
+            "text": {"format": native_task_format(family, citation_ids, stable_name=arm == "native-enum") if arm != "json-mode"
                      else {"type": "json_object"}}}
 
 
@@ -156,7 +158,7 @@ def public_task(case: dict, records: list[dict], json_label: bool = False,
 
 
 def campaign_views(spec: dict):
-    if spec in (SPEC_V19S, SPEC_V110S, SPEC_V111S):
+    if spec in (SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S):
         yield from join_contrast_cases(spec)
         return
     for scenario in CALIBRATION_CASES:
@@ -194,9 +196,9 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
             visible = [r["id"] for r in case["records"] if source_text(r) in prompt]
             if visible != [r["id"] for r in supplied]:
                 raise ValueError("JSON serialization changed source visibility.")
-            for arm in ARMS[::1 if view_index % 2 == 0 else -1]:
+            for arm in spec["arms"][::1 if view_index % 2 == 0 else -1]:
                 params = request_params(case["family"], arm,
-                                        [r["id"] for r in supplied] if spec.get("citation_enum") else None)
+                                        visible if spec.get("citation_enum") or arm == "native-enum" else None)
                 body = {**params, "input": prompt, "instructions": SYSTEM}
                 cells.append({"id": f"{case['id']}:{condition}:{arm}", "case_id": case["id"], "arm": arm,
                               "scenario": scenario, "family": case["family"], "condition": condition,
@@ -238,7 +240,8 @@ def source_revision() -> str:
               "scenarios/luna_native_contract_v18s.json", "docs/luna-native-contract-v18s-protocol.md",
               "scenarios/luna_native_contract_v19s.json", "docs/luna-native-contract-v19s-protocol.md",
               "scenarios/luna_native_contract_v110s.json", "docs/luna-native-contract-v110s-protocol.md",
-              "scenarios/luna_native_contract_v111s.json", "docs/luna-native-contract-v111s-protocol.md"]
+              "scenarios/luna_native_contract_v111s.json", "docs/luna-native-contract-v111s-protocol.md",
+              "scenarios/luna_native_contract_v112s.json", "docs/luna-native-contract-v112s-protocol.md"]
     subprocess.run(["git", "ls-files", "--error-unmatch", *paths], cwd=REPO, capture_output=True, check=True)
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *paths], cwd=REPO, check=True)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
@@ -357,10 +360,12 @@ def run(out: Path, digest: str, cfg_path: str) -> dict:
                    "unsafe_response": False, "client_error": None, "helper_validation_error": None}
         try:
             try:
-                if cell["arm"] == "native":
+                if cell["arm"] in ("native", "native-enum"):
+                    enum_arm = cell["arm"] == "native-enum"
                     response = call_structured_task(plan["config"], cell["task"],
                                                     max_output_tokens=plan["spec"]["per_call_output_tokens"],
-                                                    citation_enum=plan["spec"].get("citation_enum", False))["llm"]
+                                                    citation_enum=enum_arm or plan["spec"].get("citation_enum", False),
+                                                    stable_name=enum_arm)["llm"]
                 else:
                     response = call_llm_result(plan["config"], cell["prompt"], cell["system"])
             except (LLMResponseError, TaskContractError) as exc:
@@ -432,7 +437,8 @@ def audit(plan: dict, digest: str, out: Path) -> dict:
 def summarize(plan: dict, result: dict) -> dict:
     saved = {c["id"]: c for c in result["cells"]}
     arms, pairs = [], []
-    for arm in ARMS:
+    treatment, control = plan["spec"]["arms"]
+    for arm in (treatment, control):
         planned = [c for c in plan["cells"] if c["arm"] == arm]
         rows = [c for c in planned if c["id"] in saved]
         scores = [saved[c["id"]]["assessment"] for c in rows]
@@ -448,8 +454,8 @@ def summarize(plan: dict, result: dict) -> dict:
     for index in range(0, len(plan["cells"]), 2):
         cells = {c["arm"]: c for c in plan["cells"][index:index + 2]}
         if all(c["id"] in saved for c in cells.values()):
-            pairs.append((saved[cells["json-mode"]["id"]]["assessment"]["contract_success"],
-                          saved[cells["native"]["id"]]["assessment"]["contract_success"]))
+            pairs.append((saved[cells[control]["id"]]["assessment"]["contract_success"],
+                          saved[cells[treatment]["id"]]["assessment"]["contract_success"]))
     return {"method": plan["method"], "status": result["status"], "arms": arms,
             "paired_strict": paired_counts(pairs) if pairs else {"pairs": 0, "outcomes": {}, "mean_delta": None},
             "known_usage": result["known_usage"],
