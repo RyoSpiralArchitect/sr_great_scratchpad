@@ -1,4 +1,4 @@
-"""Bounded paired JSON-mode/native-schema calibration on fresh public inputs."""
+"""Bounded paired output-contract calibrations on fresh public inputs."""
 
 from __future__ import annotations
 
@@ -9,12 +9,14 @@ from pathlib import Path
 import subprocess
 import time
 
+from . import asof_handoff, countersigned_join
 from .dialogue import add_usage, append_jsonl, canonical_json_sha256, empty_usage
 from .experiments import write_manifest
 from .grounded_recall import runtime_hashes, strict_json
 from .llm import LLMResponseError, api_key_from_config, call_llm_result, estimate_token_count
 from .luna_uncertainty import CONFIG, config, failure_tags, paired_counts, record_usage, sha
 from .memory_task_design import source_text
+from .native_join_contrast import join_contrast_cases
 from .storage import load_llm_config, now_iso
 from .structured_tasks import (
     SYSTEM, TaskContractError, call_structured_task, native_task_format, native_task_schema, validate_task_answer,
@@ -55,6 +57,28 @@ SPEC_V16S = {**SPEC_V11, "schema": "luna-native-contract-v16s", "fresh_seed": 26
 SPEC_V17S = {**SPEC_V15S, "schema": "luna-native-contract-v17s", "fresh_seed": 26110320}
 SPEC_V18S = {**SPEC_V16S, "schema": "luna-native-contract-v18s", "fresh_seed": 26110321,
              "distractor_count": 54}
+SPEC_V19S = {**SPEC_V15S, "schema": "luna-native-contract-v19s", "fresh_seed": 26110322,
+             "source_scenarios": ["complete-join", "pending-join"], "partial_scenarios": ["complete-join"],
+             "empty_scenarios": [], "decoy_chains": 6, "id_distances": ["far", "near"], "max_calls": 12,
+             "future_gate": "all 6 views pass both caller and semantic contracts; no retrieval pilot authorized"}
+SPEC_V110S = {**SPEC_V19S, "schema": "luna-native-contract-v110s", "fresh_seed": 26110323,
+              "line_only_contrast": True}
+SPEC_V111S = {**SPEC_V110S, "schema": "luna-native-contract-v111s", "fresh_seed": 26110324,
+              "source_scenarios": ["complete-join"], "missing_link_scenarios": ["complete-join"]}
+SPEC_V112S = {**SPEC_V111S, "schema": "luna-native-contract-v112s", "fresh_seed": 26110325,
+              "arms": ["native-enum", "native"]}
+SPEC_V113S = {**SPEC, "schema": "luna-native-contract-v113s", "fresh_seed": 26110326,
+              "arms": SPEC_V112S["arms"], "source_scenarios": [countersigned_join.SCENARIO],
+              "empty_scenarios": [], "partial_scenarios": [], "standalone": True, "flag_scope": True,
+              "max_calls": 12, "future_gate": SPEC_V112S["future_gate"]}
+SPEC_V114S = {**SPEC_V113S, "schema": "luna-native-contract-v114s", "fresh_seed": 26110327,
+              "source_scenarios": [asof_handoff.SCENARIO],
+              "queries": [[20, 42], [40, 60], [40, 50], [20, 60], [40, 42], [20, 50]]}
+SUPPORTED_SPECS = (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S,
+                   SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S, SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S,
+                   SPEC_V113S, SPEC_V114S)
+# Python considers 20.0 == 20 and 1 == True; neither substitution is a frozen JSON spec.
+SUPPORTED_SPEC_DIGESTS = frozenset(canonical_json_sha256(spec) for spec in SUPPORTED_SPECS)
 FLAG_LEXICON = ("\nFlag lexicon: 有効 = enabled; 無効 = disabled; 未確認 = unknown; "
                 "a flag not stated in the supplied request = unobserved.")
 FLAG_SCOPE = "\nFor non-routing task families, use flags: {}."
@@ -118,11 +142,11 @@ def load_parent(runs_root: Path, spec: dict = SPEC) -> dict:
 
 
 def request_params(family: str, arm: str, citation_ids: list[str] | None = None) -> dict:
-    if arm not in ARMS:
+    if arm not in (*ARMS, "native-enum") or (arm == "native-enum" and citation_ids is None):
         raise ValueError("Unknown frozen experiment arm.")
     return {"model": CONFIG["model"], "reasoning": {"effort": CONFIG["reasoning_effort"]},
             "max_output_tokens": SPEC["per_call_output_tokens"], "store": False,
-            "text": {"format": native_task_format(family, citation_ids) if arm == "native"
+            "text": {"format": native_task_format(family, citation_ids, stable_name=arm == "native-enum") if arm != "json-mode"
                      else {"type": "json_object"}}}
 
 
@@ -144,16 +168,19 @@ def public_task(case: dict, records: list[dict], json_label: bool = False,
                                 "records": [{"id": r["id"], "text": source_text(r)} for r in records]})
 
 
-def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
-    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S):
-        raise ValueError("Unknown calibration protocol; version it before spending.")
-    cfg = config(cfg)
-    cases, cells = [], []
-    view_index = 0
+def campaign_views(spec: dict):
+    if spec == SPEC_V114S:
+        yield from asof_handoff.cases(spec)
+        return
+    if spec == SPEC_V113S:
+        yield from countersigned_join.handoff_cases(spec)
+        return
+    if spec in (SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S):
+        yield from join_contrast_cases(spec)
+        return
     for scenario in CALIBRATION_CASES:
         case = make_state_case(spec["fresh_seed"], scenario, "native-fresh",
                                spec.get("distractor_count", 18))
-        cases.append(case)
         records = [r for r in case["records"] if r["kind"] != "distractor"]
         views = [("source", records)]
         if scenario in spec["empty_scenarios"]:
@@ -164,6 +191,18 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
             views.append(("partial-chain", [r for r in records if r["kind"] != "line-pool"]))
         if scenario in spec.get("distracted_scenarios", ()):
             views.append(("distracted", list(case["records"])))
+        yield case, views
+
+
+def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
+    if canonical_json_sha256(spec) not in SUPPORTED_SPEC_DIGESTS:
+        raise ValueError("Unknown calibration protocol; version it before spending.")
+    cfg = config(cfg)
+    cases, cells = [], []
+    view_index = 0
+    for case, views in campaign_views(spec):
+        cases.append(case)
+        scenario = case["scenario"]
         for condition, supplied in views:
             task = public_task(case, supplied, json_label=spec != SPEC,
                                citation_enum=spec.get("citation_enum", False),
@@ -174,9 +213,9 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
             visible = [r["id"] for r in case["records"] if source_text(r) in prompt]
             if visible != [r["id"] for r in supplied]:
                 raise ValueError("JSON serialization changed source visibility.")
-            for arm in ARMS[::1 if view_index % 2 == 0 else -1]:
+            for arm in spec["arms"][::1 if view_index % 2 == 0 else -1]:
                 params = request_params(case["family"], arm,
-                                        [r["id"] for r in supplied] if spec.get("citation_enum") else None)
+                                        visible if spec.get("citation_enum") or arm == "native-enum" else None)
                 body = {**params, "input": prompt, "instructions": SYSTEM}
                 cells.append({"id": f"{case['id']}:{condition}:{arm}", "case_id": case["id"], "arm": arm,
                               "scenario": scenario, "family": case["family"], "condition": condition,
@@ -189,7 +228,7 @@ def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
     old = parent_plan["cases"]
     if any({c[field] for c in cases} & {c[field] for c in old} for field in ("seed", "id", "target")):
         raise ValueError("Fresh case identities overlap the retained parent.")
-    if (len(cases) != 10 or len(cells) != spec["max_calls"]
+    if (len({c["seed"] for c in cases}) != len(spec["source_scenarios"]) or len(cells) != spec["max_calls"]
             or len({c["id"] for c in cells}) != len(cells)):
         raise ValueError("Missing or duplicate frozen cases.")
     return {"method": spec["schema"], "spec": spec, "config": cfg,
@@ -215,7 +254,13 @@ def source_revision() -> str:
               "scenarios/luna_native_contract_v15s.json", "docs/luna-native-contract-v15s-protocol.md",
               "scenarios/luna_native_contract_v16s.json", "docs/luna-native-contract-v16s-protocol.md",
               "scenarios/luna_native_contract_v17s.json", "docs/luna-native-contract-v17s-protocol.md",
-              "scenarios/luna_native_contract_v18s.json", "docs/luna-native-contract-v18s-protocol.md"]
+              "scenarios/luna_native_contract_v18s.json", "docs/luna-native-contract-v18s-protocol.md",
+              "scenarios/luna_native_contract_v19s.json", "docs/luna-native-contract-v19s-protocol.md",
+              "scenarios/luna_native_contract_v110s.json", "docs/luna-native-contract-v110s-protocol.md",
+              "scenarios/luna_native_contract_v111s.json", "docs/luna-native-contract-v111s-protocol.md",
+              "scenarios/luna_native_contract_v112s.json", "docs/luna-native-contract-v112s-protocol.md",
+              "scenarios/luna_native_contract_v113s.json", "docs/luna-native-contract-v113s-protocol.md",
+              "scenarios/luna_native_contract_v114s.json", "docs/luna-native-contract-v114s-protocol.md"]
     subprocess.run(["git", "ls-files", "--error-unmatch", *paths], cwd=REPO, capture_output=True, check=True)
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *paths], cwd=REPO, check=True)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
@@ -225,7 +270,7 @@ def source_revision() -> str:
 def prepare(out: Path, runs_root: Path, spec_path: Path, cfg_path: str,
             max_calls: int, max_output: int, max_input_bytes: int) -> dict:
     spec = strict_json(spec_path.read_text())
-    if spec not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S):
+    if canonical_json_sha256(spec) not in SUPPORTED_SPEC_DIGESTS:
         raise ValueError("Protocol changed; version it before spending.")
     if spec == SPEC:
         raise ValueError("V1 is a retained stopped campaign; prepare fresh cases under V1.2 instead.")
@@ -251,7 +296,7 @@ def load_plan(out: Path, digest: str, cfg_path: str) -> dict:
     if envelope["plan_sha256"] != digest or canonical_json_sha256(plan) != digest:
         raise ValueError("Frozen plan digest mismatch.")
     expected_parent = None if plan["spec"].get("standalone") else PARENT
-    if (cfg != plan["config"] or plan["spec"] not in (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S)
+    if (cfg != plan["config"] or canonical_json_sha256(plan["spec"]) not in SUPPORTED_SPEC_DIGESTS
             or plan["parent"] != expected_parent or plan["method"] != plan["spec"]["schema"]
             or plan.get("retained_failed") != (
                 None if plan["spec"].get("standalone") else (STOPPED_V1 if plan["spec"] != SPEC else None))
@@ -334,10 +379,12 @@ def run(out: Path, digest: str, cfg_path: str) -> dict:
                    "unsafe_response": False, "client_error": None, "helper_validation_error": None}
         try:
             try:
-                if cell["arm"] == "native":
+                if cell["arm"] in ("native", "native-enum"):
+                    enum_arm = cell["arm"] == "native-enum"
                     response = call_structured_task(plan["config"], cell["task"],
                                                     max_output_tokens=plan["spec"]["per_call_output_tokens"],
-                                                    citation_enum=plan["spec"].get("citation_enum", False))["llm"]
+                                                    citation_enum=enum_arm or plan["spec"].get("citation_enum", False),
+                                                    stable_name=enum_arm)["llm"]
                 else:
                     response = call_llm_result(plan["config"], cell["prompt"], cell["system"])
             except (LLMResponseError, TaskContractError) as exc:
@@ -409,28 +456,32 @@ def audit(plan: dict, digest: str, out: Path) -> dict:
 def summarize(plan: dict, result: dict) -> dict:
     saved = {c["id"]: c for c in result["cells"]}
     arms, pairs = [], []
-    for arm in ARMS:
-        rows = [c for c in plan["cells"] if c["arm"] == arm and c["id"] in saved]
+    treatment, control = plan["spec"]["arms"]
+    for arm in (treatment, control):
+        planned = [c for c in plan["cells"] if c["arm"] == arm]
+        rows = [c for c in planned if c["id"] in saved]
         scores = [saved[c["id"]]["assessment"] for c in rows]
         usage = empty_usage()
         for cell in rows:
             add_usage(usage, saved[cell["id"]]["known_usage"])
-        arms.append({"arm": arm, "attempted": len(rows), "planned": len(plan["cells"]) // 2,
+        arms.append({"arm": arm, "attempted": len(rows), "planned": len(planned),
                      **{k: sum(bool(s.get(k)) for s in scores) for k in METRICS},
-                     "all_15_passed": len(scores) == 15 and all(s["contract_success"] for s in scores),
+                     f"all_{len(planned)}_passed": len(scores) == len(planned) and all(s["contract_success"] for s in scores),
                      "known_usage": usage,
                      "unavailable_usage_calls": sum(not saved[c["id"]]["usage_reported"] for c in rows),
                      "failure_tags": dict(Counter(t for s in scores for t in s["failure_tags"]))})
     for index in range(0, len(plan["cells"]), 2):
         cells = {c["arm"]: c for c in plan["cells"][index:index + 2]}
         if all(c["id"] in saved for c in cells.values()):
-            pairs.append((saved[cells["json-mode"]["id"]]["assessment"]["contract_success"],
-                          saved[cells["native"]["id"]]["assessment"]["contract_success"]))
+            pairs.append((saved[cells[control]["id"]]["assessment"]["contract_success"],
+                          saved[cells[treatment]["id"]]["assessment"]["contract_success"]))
     return {"method": plan["method"], "status": result["status"], "arms": arms,
             "paired_strict": paired_counts(pairs) if pairs else {"pairs": 0, "outcomes": {}, "mean_delta": None},
             "known_usage": result["known_usage"],
             "unavailable_usage_calls": result["unavailable_usage_calls"], "pilot_calls": 0,
-            "scope": "15 dependent views of ten fresh authored cases; not retrieval efficacy or adoption evidence.",
+            "scope": (f"{len(plan['cells']) // 2} dependent views of {len(plan['spec']['source_scenarios'])} "
+                      f"fresh authored case{'s' if len(plan['spec']['source_scenarios']) != 1 else ''}; "
+                      "not retrieval efficacy or adoption evidence."),
             "cases": [{k: c[k] for k in ("id", "arm", "scenario", "family", "condition")} | saved[c["id"]]
                       for c in plan["cells"] if c["id"] in saved]}
 

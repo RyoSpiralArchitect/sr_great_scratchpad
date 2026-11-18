@@ -12,7 +12,7 @@ from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
     ARMS, COMPLETED_V11, CONFIG, FLAG_LEXICON, FLAG_SCOPE, PARENT, SPEC, SPEC_V11, SPEC_V12,
     SPEC_V12S, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V16S, SPEC_V17S, SPEC_V18S,
-    SYSTEM, assess, audit,
+    SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S, SPEC_V113S, SPEC_V114S, SYSTEM, assess, audit,
     build_plan, load_parent, load_plan, outcome, main, prepare, request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
@@ -60,13 +60,13 @@ class NativeCampaignTests(unittest.TestCase):
         return plan, digest
 
     def provider(self, plan, transform=None):
-        lookup = {(c["prompt"], c["request_params"]["text"]["format"]["type"]): c for c in plan["cells"]}
+        lookup = {c["request_sha256"]: c for c in plan["cells"]}
 
         def call(req, **kwargs):
             body = json.loads(req.data)
             if plan["spec"] != SPEC:
                 self.assertIn("json", body["input"].lower())
-            cell = lookup[(body["input"], body["text"]["format"]["type"])]
+            cell = lookup[canonical_json_sha256(body)]
             self.assertEqual(body, {**cell["request_params"], "input": cell["prompt"], "instructions": SYSTEM})
             self.assertEqual(canonical_json_sha256(body), cell["request_sha256"])
             expected = cell["expected"]
@@ -384,7 +384,297 @@ class NativeCampaignTests(unittest.TestCase):
             self.assertEqual(result["status"], "complete")
             self.assertEqual(result["method"], SPEC_V18S["schema"])
             self.assertEqual(audit(plan, digest, Path(tmp)), result)
-            self.assertEqual(summarize(plan, result)["method"], SPEC_V18S["schema"])
+            report = summarize(plan, result)
+            self.assertTrue(all(a["all_25_passed"] for a in report["arms"]))
+            self.assertTrue(report["scope"].startswith("25 dependent views of 10"))
+            prefix = {**result, "status": "stopped", "cells": result["cells"][:30]}
+            self.assertFalse(any(a["all_25_passed"] for a in summarize(plan, prefix)["arms"]))
+
+    def test_v19s_changes_only_decoy_keys_and_preserves_disconnected_chains(self):
+        self.assertEqual(json.loads((REPO / "scenarios/luna_native_contract_v19s.json").read_text()), SPEC_V19S)
+        plan = build_plan(CONFIG, {"cases": []}, SPEC_V19S)
+        self.assertEqual(plan["budget"]["max_output_tokens"], 49152)
+        self.assertLessEqual(plan["budget"]["input_utf8_bytes"], 200000)
+        for scenario in SPEC_V19S["source_scenarios"]:
+            far, near = sorted((c for c in plan["cases"] if c["scenario"] == scenario), key=lambda c: c["id"])
+            self.assertEqual(far["truth"], near["truth"])
+            self.assertEqual(far["target"], near["target"])
+            for case, distance in ((far, 5), (near, 1)):
+                records = case["records"]
+                assigned = {r["target"]: r["team"] for r in records if r["kind"] == "assignment"}
+                links = {r["team"]: r["line"] for r in records if r["kind"] == "team-line"}
+                ends = {r["line"]: r.get("pool") for r in records if r["kind"] in ("line-pool", "pending")}
+                self.assertEqual(len(assigned), 7)
+                self.assertEqual(set(assigned.values()), set(links))
+                self.assertEqual(set(links.values()), set(ends))
+                self.assertEqual(len(set(ends.values())), 7)
+                target = case["target"]
+                true_keys = (target, assigned[target], links[assigned[target]])
+                for ticket, team in assigned.items():
+                    if ticket != target:
+                        for key, real in zip((ticket, team, links[team]), true_keys):
+                            self.assertEqual(len(key), len(real))
+                            self.assertEqual(sum(x != y for x, y in zip(key, real)), distance)
+            for a, b in zip(far["records"], near["records"]):
+                self.assertEqual((a["id"], a["turn"], a["kind"], a.get("pool")),
+                                 (b["id"], b["turn"], b["kind"], b.get("pool")))
+                if a["id"] in far["truth"]["support"]:
+                    self.assertEqual(a, b)
+        for a, b in zip(plan["cells"][::2], plan["cells"][1::2]):
+            self.assertEqual(a["prompt"], b["prompt"])
+            self.assertEqual(a["expected"], b["expected"])
+            self.assertEqual(len(a["visible_ids"]), 20 if a["condition"].endswith("missing") else 21)
+            self.assertEqual(len(a["expected"]["support"]), 2 if a["condition"].endswith("missing") else 3)
+            self.assertEqual(a["expected"]["status"], "known" if (
+                a["scenario"] == "complete-join" and a["condition"].endswith("source")) else "unknown")
+
+    def test_v19s_rejects_a_decoy_citation_even_when_the_value_is_correct(self):
+        plan = build_plan(CONFIG, {"cases": []}, SPEC_V19S)
+        cell = next(c for c in plan["cells"] if c["condition"] == "near-missing")
+        case = next(c for c in plan["cases"] if c["id"] == cell["case_id"])
+        decoy = next(r for r in case["records"] if r["kind"] == "line-pool" and r["id"] in cell["visible_ids"])
+        for value in (None, decoy["pool"]):
+            raw = json.dumps({"status": "unknown" if value is None else "known", "value": value,
+                              "flags": {}, "evidence": [*cell["expected"]["support"], decoy["id"]]})
+            receipt = {"unsafe_response": False, "llm": {"content": raw, "response_model": CONFIG["model"],
+                       "adapter": "openai-responses", "response_status": "completed", "request_params": cell["request_params"]}}
+            score = assess(plan, cell, receipt)
+            self.assertTrue(score["caller_contract_ok"])
+            self.assertEqual(score["value_correct"], value is None)
+            self.assertFalse(score["citations_relevant"])
+            self.assertFalse(score["contract_success"])
+
+    def test_v110s_only_renames_the_decoy_line_keys_at_both_ends(self):
+        self.assertEqual(json.loads((REPO / "scenarios/luna_native_contract_v110s.json").read_text()), SPEC_V110S)
+        old = build_plan(CONFIG, {"cases": []}, SPEC_V19S)
+        plan = build_plan(CONFIG, old, SPEC_V110S)
+        self.assertEqual(len(plan["cells"]), 12)
+        for scenario in SPEC_V110S["source_scenarios"]:
+            far, near = sorted((c for c in plan["cases"] if c["scenario"] == scenario), key=lambda c: c["id"])
+            self.assertEqual(far["truth"], near["truth"])
+            facts = {r["kind"]: r for r in far["records"] if r["id"] in far["truth"]["support"]}
+            true_team, true_line = facts["assignment"]["team"], facts["team-line"]["line"]
+            links, ends = {}, {}
+            for a, b in zip(far["records"], near["records"], strict=True):
+                if a["id"] in far["truth"]["support"] or a["kind"] == "assignment":
+                    self.assertEqual(a, b)
+                    if a["kind"] == "assignment" and a["target"] != far["target"]:
+                        for val, target in ((a["team"], true_team), (a["target"], far["target"])):
+                            self.assertEqual(sum(x != y for x, y in zip(val, target, strict=True)), 5)
+                    continue
+                fa, ne = a["line"], b["line"]
+                self.assertEqual(sum(x != y for x, y in zip(fa, true_line, strict=True)), 5)
+                self.assertEqual(ne[:-1], true_line[:-1])
+                self.assertNotEqual(ne[-1], true_line[-1])
+                self.assertIn(fa, a["text"])
+                self.assertEqual(b, {**a, "line": ne, "text": a["text"].replace(fa, ne)})
+                (links if a["kind"] == "team-line" else ends)[fa] = ne
+            self.assertEqual(links, ends)
+            self.assertEqual(len(links), 6)
+            self.assertEqual(len(set(links.values())), 6)
+        for a, b in zip(plan["cells"][::2], plan["cells"][1::2], strict=True):
+            self.assertEqual(a["prompt"], b["prompt"])
+            partner = next(c for c in plan["cells"] if c["case_id"] != a["case_id"]
+                           and (c["scenario"], c["arm"], c["condition"].split("-")[1]) ==
+                           (a["scenario"], a["arm"], a["condition"].split("-")[1]))
+            for field in ("system", "request_params", "expected", "visible_ids"):
+                self.assertEqual(a[field], partner[field])
+            self.assertEqual(a["task"]["question"], partner["task"]["question"])
+
+    def test_v111s_removes_only_the_selected_edge_and_requires_reachable_evidence(self):
+        spec_file = REPO / "scenarios/luna_native_contract_v111s.json"
+        self.assertEqual(json.loads(spec_file.read_text()), SPEC_V111S)
+        plan = build_plan(CONFIG, build_plan(CONFIG, {"cases": []}, SPEC_V110S), SPEC_V111S)
+        for distance in ("near", "far"):
+            for arm in ARMS:
+                cells = {c["condition"].removeprefix(distance + "-"): c for c in plan["cells"]
+                         if c["arm"] == arm and c["condition"].startswith(distance + "-")}
+                full = cells["source"]
+                assignment, link, endpoint = full["expected"]["support"]
+                self.assertEqual(len(full["visible_ids"]), 21)
+                for view, omitted, support in (("missing", endpoint, [assignment, link]),
+                                                ("missing-link", link, [assignment])):
+                    cell = cells[view]
+                    self.assertEqual(cell["task"], {**full["task"], "records": [
+                        r for r in full["task"]["records"] if r["id"] != omitted]})
+                    self.assertEqual(cell["expected"], {"status": "unknown", "value": None, "flags": {},
+                                                        "support": support, "eligible_ids": support})
+                    self.assertEqual(cell["request_params"], full["request_params"])
+                gap = cells["missing-link"]
+                pool = full["expected"]["value"]
+                self.assertTrue(any(r["id"] == endpoint and pool in r["text"] for r in gap["task"]["records"]))
+                for value in (None, pool):
+                    raw = json.dumps({"status": "unknown" if value is None else "known", "value": value,
+                                      "flags": {}, "evidence": [assignment, endpoint]})
+                    receipt = {"unsafe_response": False, "llm": {"content": raw, "response_model": CONFIG["model"],
+                               "adapter": "openai-responses", "response_status": "completed",
+                               "request_params": gap["request_params"]}}
+                    score = assess(plan, gap, receipt)
+                    self.assertTrue(score["caller_contract_ok"] and score["citations_visible"])
+                    self.assertEqual(score["value_correct"], value is None)
+                    self.assertFalse(score["citations_relevant"])
+                    self.assertFalse(score["contract_success"])
+
+    def test_join_contrasts_exercise_both_adapters_without_provider_spend(self):
+        for spec in (SPEC_V19S, SPEC_V110S, SPEC_V111S):
+            with self.subTest(spec=spec["schema"]), tempfile.TemporaryDirectory() as tmp:
+                plan, digest, result, calls = self.execute(Path(tmp), spec=spec)
+                self.assertEqual(calls, 12)
+                self.assertEqual(audit(plan, digest, Path(tmp)), result)
+                report = summarize(plan, result)
+                self.assertTrue(all(a["all_6_passed"] for a in report["arms"]))
+                self.assertTrue(report["scope"].startswith(f"6 dependent views of {len(spec['source_scenarios'])}"))
+
+    def test_v112s_pairs_differ_only_by_the_visible_id_enum(self):
+        spec = json.loads((REPO / "scenarios/luna_native_contract_v112s.json").read_text())
+        self.assertEqual(spec, SPEC_V112S)
+        plan = build_plan(CONFIG, build_plan(CONFIG, {"cases": []}, SPEC_V111S), spec)
+        self.assertEqual(len(plan["cells"]), 12)
+        for i, (a, b) in enumerate(zip(plan["cells"][::2], plan["cells"][1::2], strict=True)):
+            self.assertEqual([a["arm"], b["arm"]], spec["arms"][::1 if i % 2 == 0 else -1])
+            enum, plain = (a, b) if a["arm"] == "native-enum" else (b, a)
+            for key in ("prompt", "system", "task", "visible_ids", "expected", "case_id", "condition"):
+                self.assertEqual(enum[key], plain[key])
+            params = deepcopy(enum["request_params"])
+            fmt = params["text"]["format"]
+            self.assertTrue(fmt["strict"])
+            self.assertEqual(fmt["type"], "json_schema")
+            ids = fmt["schema"]["properties"]["evidence"]["items"].pop("enum")
+            self.assertEqual(ids, sorted(r["id"] for r in enum["task"]["records"]))
+            self.assertTrue(set(enum["expected"]["support"]) < set(ids))
+            self.assertEqual(params, plain["request_params"])
+
+    def test_v112s_audits_prose_and_unlicensed_bare_ids_without_repair(self):
+        def transform(cell, payload):
+            msg = payload["output"][0]["content"][0]
+            answer = json.loads(msg["text"])
+            if cell["condition"] == "near-missing" and cell["arm"] == "native":
+                answer["evidence"][0] += ": explanation"
+            if cell["condition"] == "far-missing-link" and cell["arm"] == "native-enum":
+                answer["evidence"].append(next(i for i in cell["visible_ids"] if i not in answer["evidence"]))
+            msg["text"] = json.dumps(answer)
+            return payload
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), transform, spec=SPEC_V112S)
+            self.assertEqual(calls, 12)
+            report = summarize(plan, audit(plan, digest, Path(tmp)))
+            self.assertEqual(report["paired_strict"]["outcomes"], {"both": 4, "control-only": 1, "treatment-only": 1})
+            enum, plain = report["arms"]
+            self.assertEqual((enum["arm"], plain["arm"]), ("native-enum", "native"))
+            self.assertEqual((enum["caller_contract_ok"], plain["caller_contract_ok"]), (6, 5))
+            self.assertEqual((enum["value_correct"], plain["value_correct"]), (6, 6))
+            self.assertEqual((enum["contract_success"], plain["contract_success"]), (5, 5))
+
+    def test_v113s_matches_hand_checked_proofs_and_controlled_public_differences(self):
+        self.assertEqual(json.loads((REPO / "scenarios/luna_native_contract_v113s.json").read_text()), SPEC_V113S)
+        prior = build_plan(CONFIG, {"cases": []}, SPEC_V112S)
+        plan = build_plan(CONFIG, prior, SPEC_V113S)
+        # Read directly from the public rows, not computed by the matching oracle.
+        keys = {
+            "balanced-Rdc0c0": ("P9c41c", "m003 m004 m010 m016"),
+            "balanced-Rdc0c1": ("P5eaba", "m001 m006 m015 m008"),
+            "left-gap-Rdc0c0": (None, "m003 m004 m005"),
+            "left-gap-Rdc0c1": (None, "m001 m006 m015 m013 m002"),
+            "right-gap-Rdc0c0": (None, "m003 m004 m010 m005 m017"),
+            "right-gap-Rdc0c1": (None, "m001 m006 m013"),
+        }
+        packets = {}
+        for a, b in zip(plan["cells"][::2], plan["cells"][1::2], strict=True):
+            self.assertEqual(a["task"], b["task"])
+            enum, plain = (a, b) if a["arm"] == "native-enum" else (b, a)
+            params = deepcopy(enum["request_params"])
+            ids = params["text"]["format"]["schema"]["properties"]["evidence"]["items"].pop("enum")
+            self.assertEqual(sorted(enum["visible_ids"]), ids)
+            self.assertEqual(len(ids), 18)
+            self.assertEqual(params, plain["request_params"])
+            value, proof = keys[a["condition"]]
+            self.assertEqual(a["expected"]["value"], value)
+            self.assertEqual(set(a["expected"]["support"]), set(proof.split()))
+            self.assertEqual(set(a["expected"]["eligible_ids"]), set(proof.split()))
+            bundle, site = a["condition"].rsplit("-", 1)
+            rows = a["task"]["records"]
+            self.assertEqual(rows, packets.setdefault(bundle, rows))
+            self.assertEqual(a["task"]["question"].splitlines()[0], f"照会：台帳 {site} の依頼 Q8780 の実行プールは？")
+        for bundle in ("left-gap", "right-gap"):
+            self.assertEqual([r["id"] for r in packets[bundle]], [r["id"] for r in packets["balanced"]])
+            edits = [(a["text"], b["text"]) for a, b in zip(packets[bundle], packets["balanced"], strict=True) if a != b]
+            self.assertEqual(len(edits), 2)
+            for x, y in edits:
+                self.assertIn("受領：", x)
+                self.assertEqual(sum(c != d for c, d in zip(x, y, strict=True)), 1)
+
+    def test_v113s_supplied_but_wrong_scope_and_conflict_tiebreak_fail(self):
+        def transform(cell, payload):
+            if cell["arm"] != "native-enum":
+                return payload
+            msg = payload["output"][0]["content"][0]
+            a = json.loads(msg["text"])
+            if cell["condition"] == "balanced-Rdc0c0":
+                a["value"] = "P5eaba"
+                a["evidence"] = ["m001", "m006", "m015", "m008"]
+            if cell["condition"] == "right-gap-Rdc0c0":
+                a["evidence"] = ["m003", "m004", "m010"]
+            msg["text"] = json.dumps(a)
+            return payload
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), transform, spec=SPEC_V113S)
+            self.assertEqual(calls, 12)
+            enum, plain = summarize(plan, audit(plan, digest, Path(tmp)))["arms"]
+            self.assertEqual((enum["caller_contract_ok"], enum["value_correct"], enum["contract_success"]), (6, 5, 4))
+            self.assertEqual(plain["contract_success"], 6)
+
+    def test_v114s_asof_grid_and_exact_proofs_from_public_rows(self):
+        self.assertEqual(json.loads((REPO / "scenarios/luna_native_contract_v114s.json").read_text()), SPEC_V114S)
+        plan = build_plan(CONFIG, build_plan(CONFIG, {"cases": []}, SPEC_V113S), SPEC_V114S)
+        # Independent read-through of the frozen packet; neither the generator nor scorer gets this key.
+        expected = {
+            (20, 42): ("Pfd5d2", "m017 m013 m018 m022 m001"),
+            (20, 50): (None, "m017 m013 m018 m020 m022"),
+            (20, 60): (None, "m017 m013 m018 m020 m022"),
+            (40, 42): (None, "m017 m013 m018 m022 m005"),
+            (40, 50): ("P2960d", "m017 m013 m018 m020 m022 m005 m014"),
+            (40, 60): (None, "m017 m013 m018 m008 m022 m005"),
+        }
+        rows = plan["cells"][0]["task"]["records"]
+        self.assertEqual(len(rows), 23)
+        seen = set()
+        for a, b in zip(plan["cells"][::2], plan["cells"][1::2], strict=True):
+            enum, plain = (a, b) if a["arm"] == "native-enum" else (b, a)
+            self.assertEqual(enum["prompt"], plain["prompt"])
+            self.assertEqual(enum["task"]["records"], rows)
+            params = deepcopy(enum["request_params"])
+            ids = params["text"]["format"]["schema"]["properties"]["evidence"]["items"].pop("enum")
+            self.assertEqual(ids, sorted(r["id"] for r in rows))
+            self.assertEqual(params, plain["request_params"])
+            case = next(c for c in plan["cases"] if c["id"] == enum["case_id"])
+            dates = case["asof"], case["file_cutoff"]
+            self.assertIn(f"対象日 {dates[0]}、登録締切 {dates[1]}。", enum["task"]["question"])
+            seen.add(dates)
+            value, proof = expected[dates]
+            self.assertEqual(enum["expected"]["value"], value)
+            self.assertEqual(set(enum["expected"]["support"]), set(proof.split()))
+        self.assertEqual(seen, set(expected))
+
+    def test_v114s_rejects_real_but_future_unauthorized_and_superseded_citations(self):
+        def transform(cell, payload):
+            substitutions = {"effective40-filed60": ("m008", "m015"),  # latest filing, not latest effect
+                             "effective40-filed50": ("m020", "m023"),  # wrong issuer
+                             "effective20-filed42": ("m018", "m003")}  # outside cutoffs
+            if cell["arm"] == "native-enum" and cell["condition"] in substitutions:
+                msg = payload["output"][0]["content"][0]
+                old, new = substitutions[cell["condition"]]
+                answer = json.loads(msg["text"])
+                answer["evidence"][answer["evidence"].index(old)] = new
+                msg["text"] = json.dumps(answer)
+            return payload
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, digest, result, calls = self.execute(Path(tmp), transform, spec=SPEC_V114S)
+            self.assertEqual(calls, 12)
+            enum, plain = summarize(plan, audit(plan, digest, Path(tmp)))["arms"]
+            self.assertEqual((enum["caller_contract_ok"], enum["value_correct"], enum["contract_success"]), (6, 6, 3))
+            self.assertEqual(plain["contract_success"], 6)
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):
         empty = [c for c in self.plan["cells"] if c["condition"] == "empty"]
@@ -559,6 +849,27 @@ class NativeCampaignTests(unittest.TestCase):
                 self.assertEqual(load_plan(out, envelope["plan_sha256"], CFG_PATH), envelope["plan"])
                 with self.assertRaises(FileExistsError):
                     prepare(out, Path(tmp), SPEC_V12_PATH, CFG_PATH, 30, 122880, 300000)
+
+    def test_frozen_spec_rejects_numeric_and_boolean_type_substitutions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan, _ = self.fixture(root, SPEC_V114S)
+            for key, replacement in (("queries", [[20.0, 42], *SPEC_V114S["queries"][1:]]),
+                                     ("standalone", 1)):
+                with self.subTest(key=key):
+                    altered = {**SPEC_V114S, key: replacement}
+                    with self.assertRaisesRegex(ValueError, "Unknown calibration protocol"):
+                        build_plan(CONFIG, {"cases": []}, altered)
+                    spec_path = root / "altered.json"
+                    write_manifest(spec_path, altered)
+                    with self.assertRaisesRegex(ValueError, "Protocol changed"):
+                        prepare(root / "new", root, spec_path, CFG_PATH, 12, 49152, 300000)
+                    self.assertFalse((root / "new").exists())
+                    changed_plan = {**plan, "spec": altered}
+                    digest = canonical_json_sha256(changed_plan)
+                    write_manifest(root / "plan.json", {"plan_sha256": digest, "plan": changed_plan})
+                    with self.assertRaisesRegex(ValueError, "protocol or provider profile changed"):
+                        load_plan(root, digest, CFG_PATH)
 
     def test_retained_v1_and_v11_campaigns_cannot_be_prepared_as_new_runs(self):
         with tempfile.TemporaryDirectory() as tmp:

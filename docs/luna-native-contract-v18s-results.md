@@ -40,8 +40,10 @@ paired: both 25、mean_delta 0.0。**25/25 ゲート達成**。
   構造的類似は高いが distractor 同士は同型の繰り返し。54→さらに上げる
   より、**distractor の質(部分chainを持つ欺瞞的レコードなど)を変える**
   方向が次の有意な段階。
-- prompt は distracted で約5.4万 tokens/件まで膨らむが、usage 不明0件、
-  停止0件で完走。input 肥大は記録するのみで効率主張には使わない。
+- 訂正（2026-11-18）: 保存済みの応答20件で、distracted の入力は
+  **3,894〜4,399 tokens/件**、両群合計84,434 tokens。「約5.4万」は
+  1件あたりではなく、JSON モードの全25件を合計した値に近い。usage
+  不明0件、停止0件。入力長から効率の優劣は判断しない。
 
 ## 使用量
 
@@ -64,6 +66,11 @@ usage 不明0件。逐次呼び出し合計約141秒(速度比較の意図なし
 | `summary.json` | `1cddebaefda527aa6e4f5b6f1ea8f3f9454d7f8a7a37f0e02758a334b40c0129` |
 
 run ディレクトリは `.great_scratchpad/runs/luna-native-contract-v18s-20261115`。
+
+旧集計は15件固定のため、保存済み summary の `all_15_passed: false` は
+25件の達成判定には使えない。表の25/25は各群の全25件の
+`contract_success` から確認した値。V1.6s の50件走行にも同じ表示上の
+制約がある。旧ファイルと上記ハッシュは変更していない。
 
 ## 次の磨き方
 

@@ -1,0 +1,17 @@
+{
+  "arms": ["native-enum", "native"],
+  "empty_scenarios": [],
+  "flag_scope": true,
+  "fresh_seed": 26110327,
+  "future_gate": "all 6 views pass both caller and semantic contracts; no retrieval pilot authorized",
+  "max_calls": 12,
+  "model": "gpt-6-luna",
+  "partial_scenarios": [],
+  "per_call_output_tokens": 4096,
+  "pilot_calls": 0,
+  "queries": [[20, 42], [40, 60], [40, 50], [20, 60], [40, 42], [20, 50]],
+  "retries": 0,
+  "schema": "luna-native-contract-v114s",
+  "source_scenarios": ["asof-handoff"],
+  "standalone": true
+}
