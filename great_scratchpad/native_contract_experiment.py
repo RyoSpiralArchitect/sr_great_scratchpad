@@ -77,6 +77,8 @@ SPEC_V114S = {**SPEC_V113S, "schema": "luna-native-contract-v114s", "fresh_seed"
 SUPPORTED_SPECS = (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S,
                    SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S, SPEC_V19S, SPEC_V110S, SPEC_V111S, SPEC_V112S,
                    SPEC_V113S, SPEC_V114S)
+# Python considers 20.0 == 20 and 1 == True; neither substitution is a frozen JSON spec.
+SUPPORTED_SPEC_DIGESTS = frozenset(canonical_json_sha256(spec) for spec in SUPPORTED_SPECS)
 FLAG_LEXICON = ("\nFlag lexicon: 有効 = enabled; 無効 = disabled; 未確認 = unknown; "
                 "a flag not stated in the supplied request = unobserved.")
 FLAG_SCOPE = "\nFor non-routing task families, use flags: {}."
@@ -193,7 +195,7 @@ def campaign_views(spec: dict):
 
 
 def build_plan(cfg: dict, parent_plan: dict, spec: dict = SPEC) -> dict:
-    if spec not in SUPPORTED_SPECS:
+    if canonical_json_sha256(spec) not in SUPPORTED_SPEC_DIGESTS:
         raise ValueError("Unknown calibration protocol; version it before spending.")
     cfg = config(cfg)
     cases, cells = [], []
@@ -268,7 +270,7 @@ def source_revision() -> str:
 def prepare(out: Path, runs_root: Path, spec_path: Path, cfg_path: str,
             max_calls: int, max_output: int, max_input_bytes: int) -> dict:
     spec = strict_json(spec_path.read_text())
-    if spec not in SUPPORTED_SPECS:
+    if canonical_json_sha256(spec) not in SUPPORTED_SPEC_DIGESTS:
         raise ValueError("Protocol changed; version it before spending.")
     if spec == SPEC:
         raise ValueError("V1 is a retained stopped campaign; prepare fresh cases under V1.2 instead.")
@@ -294,7 +296,7 @@ def load_plan(out: Path, digest: str, cfg_path: str) -> dict:
     if envelope["plan_sha256"] != digest or canonical_json_sha256(plan) != digest:
         raise ValueError("Frozen plan digest mismatch.")
     expected_parent = None if plan["spec"].get("standalone") else PARENT
-    if (cfg != plan["config"] or plan["spec"] not in SUPPORTED_SPECS
+    if (cfg != plan["config"] or canonical_json_sha256(plan["spec"]) not in SUPPORTED_SPEC_DIGESTS
             or plan["parent"] != expected_parent or plan["method"] != plan["spec"]["schema"]
             or plan.get("retained_failed") != (
                 None if plan["spec"].get("standalone") else (STOPPED_V1 if plan["spec"] != SPEC else None))

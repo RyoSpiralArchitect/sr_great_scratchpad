@@ -850,6 +850,27 @@ class NativeCampaignTests(unittest.TestCase):
                 with self.assertRaises(FileExistsError):
                     prepare(out, Path(tmp), SPEC_V12_PATH, CFG_PATH, 30, 122880, 300000)
 
+    def test_frozen_spec_rejects_numeric_and_boolean_type_substitutions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan, _ = self.fixture(root, SPEC_V114S)
+            for key, replacement in (("queries", [[20.0, 42], *SPEC_V114S["queries"][1:]]),
+                                     ("standalone", 1)):
+                with self.subTest(key=key):
+                    altered = {**SPEC_V114S, key: replacement}
+                    with self.assertRaisesRegex(ValueError, "Unknown calibration protocol"):
+                        build_plan(CONFIG, {"cases": []}, altered)
+                    spec_path = root / "altered.json"
+                    write_manifest(spec_path, altered)
+                    with self.assertRaisesRegex(ValueError, "Protocol changed"):
+                        prepare(root / "new", root, spec_path, CFG_PATH, 12, 49152, 300000)
+                    self.assertFalse((root / "new").exists())
+                    changed_plan = {**plan, "spec": altered}
+                    digest = canonical_json_sha256(changed_plan)
+                    write_manifest(root / "plan.json", {"plan_sha256": digest, "plan": changed_plan})
+                    with self.assertRaisesRegex(ValueError, "protocol or provider profile changed"):
+                        load_plan(root, digest, CFG_PATH)
+
     def test_retained_v1_and_v11_campaigns_cannot_be_prepared_as_new_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "not-issued"
