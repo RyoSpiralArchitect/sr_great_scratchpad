@@ -53,6 +53,26 @@ class NativeSchemaTests(unittest.TestCase):
                 self.assertEqual(flags["required"], ["urgent", "hold"] if family == "scoped-exception" else [])
                 self.assertTrue(native_task_format(family)["strict"])
 
+    def test_citation_enum_restricts_ids_and_empty_supplies_force_empty_evidence(self):
+        ids = ["b2", "a1", "c3"]
+        for family in FAMILIES:
+            with self.subTest(family=family):
+                schema = native_task_schema(family, ids)
+                check_items = schema["properties"]["evidence"]["items"]
+                self.assertEqual(check_items, {"type": "string", "enum": ["a1", "b2", "c3"]})
+                self.assertEqual(schema["properties"]["evidence"]["maxItems"], 8)
+                fmt = native_task_format(family, ids)
+                self.assertTrue(fmt["name"].endswith("_enum_v1"))
+                self.assertTrue(fmt["strict"])
+                empty = native_task_schema(family, [])
+                self.assertEqual(empty["properties"]["evidence"]["maxItems"], 0)
+                self.assertNotIn("enum", empty["properties"]["evidence"]["items"])
+        self.assertNotIn("enum", native_task_schema("scoped-exception")["properties"]["evidence"]["items"])
+        schema = native_task_schema("scoped-exception", ids)
+        schema["properties"]["evidence"]["items"]["enum"].clear()
+        self.assertEqual(native_task_schema("scoped-exception", ids)["properties"]["evidence"]["items"]["enum"],
+                         ["a1", "b2", "c3"])
+
     def test_family_is_explicit_even_without_sources_and_schemas_are_independent(self):
         first = native_task_schema("scoped-exception")
         first["properties"]["flags"]["required"].clear()
@@ -100,6 +120,21 @@ class NativeTaskTests(unittest.TestCase):
         self.assertEqual(len(result["contract"]["format_sha256"]), 64)
         self.assertEqual(result["validation"]["semantic_grounding"], "not_checked")
         self.assertEqual(result["validation"]["decision_authorization"], "not_checked")
+
+    def test_citation_enum_sends_enum_format_and_marks_the_contract(self):
+        with patch("great_scratchpad.llm.api_key_from_config", return_value="fake-native-key"), \
+                patch("great_scratchpad.llm.urllib.request.urlopen",
+                      return_value=io.BytesIO(json.dumps(payload(json.dumps(UNKNOWN))).encode())) as post:
+            result = call_structured_task(CONFIG, TASK, max_output_tokens=512, citation_enum=True)
+        sent = json.loads(post.call_args.args[0].data)
+        self.assertEqual(sent["text"]["format"], native_task_format(TASK["family"], ["request", "override"]))
+        self.assertTrue(result["contract"]["citation_enum"])
+        self.assertEqual(result["answer"], UNKNOWN)
+
+    def test_default_call_keeps_the_unenforced_citation_schema(self):
+        result, sent = self.call(payload(json.dumps(UNKNOWN)))
+        self.assertEqual(sent["text"]["format"], native_task_format(TASK["family"]))
+        self.assertFalse(result["contract"]["citation_enum"])
 
     def test_hold_with_unknown_urgent_is_not_overruled_by_local_validator(self):
         answer = {**UNKNOWN, "status": "known", "value": "HOLD", "evidence": ["request", "override"],

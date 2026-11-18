@@ -768,6 +768,33 @@ mode 13/15 versus native 12/15. Prose citation strings and an underspecified
 branch-proof obligation remain distinct from schema validity; neither arm
 cleared the 15/15 semantic gate.
 
+In the later [V1.8s standalone comparison](docs/luna-native-contract-v18s-results.md),
+both formats passed 25/25 views, including sources mixed with 54 distractors.
+The [V1.9s protocol](docs/luna-native-contract-v19s-protocol.md) tests a different
+failure: citing a complete chain belonging to a request with a nearly identical ID.
+In the [12-call V1.9s run](docs/luna-native-contract-v19s-results.md), neither
+format borrowed a decoy endpoint or citation. Both distinguished missing and
+explicitly pending endpoints by the evidence they cited for an unknown value.
+The [V1.10s run](docs/luna-native-contract-v110s-results.md) isolated similarity
+to the line ID alone. Both formats passed all six fresh views, including when
+only other lines had confirmed pool records.
+In the [V1.11s missing-middle run](docs/luna-native-contract-v111s-results.md),
+all four responses withheld the visible pool when the team-to-line link was
+removed. One native response in the separate missing-endpoint control returned
+prose instead of bare citation IDs; strict scores were native 5/6, JSON mode 6/6.
+In a [native-only citation enum comparison](docs/luna-native-contract-v112s-results.md)
+on a new target, both arms preserved all four abstentions and their evidence.
+The unconstrained arm added prose to IDs in one complete-chain answer; the
+enum arm returned the three exact IDs. Strict scores were 5/6 and 6/6.
+In the [two-register handoff challenge](docs/luna-native-contract-v113s-results.md),
+all 12 responses used bare supplied IDs. One no-enum answer nevertheless joined
+an offer to a receipt with a different code and reported an unlicensed pool;
+the enum arm abstained on that pair. Both arms handled both double agreements.
+In the [two-clock handoff challenge](docs/luna-native-contract-v114s-results.md),
+strict scores were 3/6 with an enum and 1/6 without. The enum arm repeatedly
+cited a filed receipt that was not yet effective; one no-enum request reached
+its output cap without an answer. Neither arm cleared the six-view gate.
+
 Run the included smoke test:
 
 ```bash

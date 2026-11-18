@@ -30,17 +30,23 @@ class TaskContractError(ValueError):
         super().__init__(message)
 
 
-def native_task_schema(family: str) -> dict:
+def native_task_schema(family: str, citation_ids: list[str] | None = None) -> dict:
     """Provider-supported shape only; cross-field/semantic checks stay local."""
     if family not in FAMILIES:
         raise ValueError("Unknown caller-declared task kind.")
     flag_keys = ["urgent", "hold"] if family == "scoped-exception" else []
+    if citation_ids is None:
+        evidence = {"type": "array", "items": {"type": "string"}, "maxItems": 8}
+    elif citation_ids:
+        evidence = {"type": "array", "items": {"type": "string", "enum": sorted(citation_ids)}, "maxItems": 8}
+    else:
+        evidence = {"type": "array", "items": {"type": "string"}, "maxItems": 0}
     return {
         "type": "object",
         "properties": {
             "status": {"type": "string", "enum": ["known", "unknown"]},
             "value": {"type": ["string", "null"]},
-            "evidence": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+            "evidence": evidence,
             "flags": {
                 "type": "object",
                 "properties": {key: {"type": "string", "enum": list(FLAG_STATES)} for key in flag_keys},
@@ -53,9 +59,10 @@ def native_task_schema(family: str) -> dict:
     }
 
 
-def native_task_format(family: str) -> dict:
-    return {"type": "json_schema", "name": f"evidence_state_{family.replace('-', '_')}_v1",
-            "strict": True, "schema": native_task_schema(family)}
+def native_task_format(family: str, citation_ids: list[str] | None = None, *, stable_name: bool = False) -> dict:
+    variant = "enum_v1" if citation_ids is not None and not stable_name else "v1"
+    return {"type": "json_schema", "name": f"evidence_state_{family.replace('-', '_')}_{variant}",
+            "strict": True, "schema": native_task_schema(family, citation_ids)}
 
 
 def validate_task_input(task: dict) -> dict:
@@ -78,9 +85,10 @@ def validate_task_input(task: dict) -> dict:
     return deepcopy(task)
 
 
-def structured_task_config(cfg: dict, family: str, max_output_tokens: int) -> dict:
+def structured_task_config(cfg: dict, family: str, max_output_tokens: int,
+                           citation_ids: list[str] | None = None, *, stable_name: bool = False) -> dict:
     """Fail before sending for unsupported adapters or conflicting contracts."""
-    response_format = native_task_format(family)
+    response_format = native_task_format(family, citation_ids, stable_name=stable_name)
     if resolve_llm_adapter(cfg, strict=False) != OPENAI_RESPONSES_ADAPTER:
         raise ValueError("Native task contracts currently require the openai-responses adapter; no fallback.")
     if not isinstance(cfg.get("model"), str) or not cfg["model"].strip():
@@ -106,10 +114,12 @@ def validate_task_answer(raw: str, family: str, source_ids: list[str]) -> dict:
     return answer
 
 
-def call_structured_task(cfg: dict, task: dict, *, max_output_tokens: int) -> dict:
+def call_structured_task(cfg: dict, task: dict, *, max_output_tokens: int,
+                         citation_enum: bool = False, stable_name: bool = False) -> dict:
     """Issue one native request, without repair, normalization or memory writes."""
     task = validate_task_input(task)
-    call_cfg = structured_task_config(cfg, task["family"], max_output_tokens)
+    citation_ids = [r["id"] for r in task["records"]] if citation_enum else None
+    call_cfg = structured_task_config(cfg, task["family"], max_output_tokens, citation_ids, stable_name=stable_name)
     response_format = call_cfg["response_format"]
     prompt = json.dumps(task, ensure_ascii=False, sort_keys=True)
     result = call_llm_result(call_cfg, prompt, SYSTEM)
@@ -131,7 +141,7 @@ def call_structured_task(cfg: dict, task: dict, *, max_output_tokens: int) -> di
     return {
         "answer": answer,
         "llm": result,
-        "contract": {"version": VERSION, "family": task["family"],
+        "contract": {"version": VERSION, "family": task["family"], "citation_enum": citation_enum,
                      "format_sha256": hashlib.sha256(schema_bytes).hexdigest(), "source_ids": source_ids},
         "validation": {"shape": True, "status_value": True, "citations_supplied": True,
                        "known_has_evidence": True, "semantic_grounding": "not_checked",

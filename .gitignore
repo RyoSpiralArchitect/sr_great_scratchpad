@@ -206,6 +206,9 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# macOS
+.DS_Store
+
 # Great Scratchpad local memory/output
 .great_scratchpad/
 context_pack*.md

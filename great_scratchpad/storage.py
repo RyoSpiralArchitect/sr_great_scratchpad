@@ -3,12 +3,11 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import os
 import re
 import sys
 from pathlib import Path
 
-from .constants import ANNOTATION_GUIDE, LLM_CONFIG_DEFAULT, ROOT_DEFAULT
+from .constants import ANNOTATION_GUIDE, LLM_CONFIG_DEFAULT
 
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).astimezone().isoformat(timespec="seconds")
