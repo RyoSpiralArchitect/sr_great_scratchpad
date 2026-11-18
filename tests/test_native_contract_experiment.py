@@ -12,7 +12,7 @@ from great_scratchpad.experiments import write_manifest
 from great_scratchpad.native_contract_experiment import (
     ARMS, COMPLETED_V11, CONFIG, FLAG_LEXICON, FLAG_SCOPE, PARENT, SPEC, SPEC_V11, SPEC_V12,
     SPEC_V12S, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S, SPEC_V16S, SPEC_V17S, SPEC_V18S,
-    SPEC_V19S, SYSTEM, assess, audit,
+    SPEC_V19S, SPEC_V110S, SYSTEM, assess, audit,
     build_plan, load_parent, load_plan, outcome, main, prepare, request_params, run, summarize,
 )
 from great_scratchpad.structured_tasks import native_task_format
@@ -444,14 +444,52 @@ class NativeCampaignTests(unittest.TestCase):
             self.assertFalse(score["citations_relevant"])
             self.assertFalse(score["contract_success"])
 
-    def test_v19s_exercises_both_adapters_without_provider_spend(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            plan, digest, result, calls = self.execute(Path(tmp), spec=SPEC_V19S)
-            self.assertEqual(calls, 12)
-            self.assertEqual(audit(plan, digest, Path(tmp)), result)
-            report = summarize(plan, result)
-            self.assertTrue(all(a["all_6_passed"] for a in report["arms"]))
-            self.assertTrue(report["scope"].startswith("6 dependent views of 2"))
+    def test_v110s_only_renames_the_decoy_line_keys_at_both_ends(self):
+        self.assertEqual(json.loads((REPO / "scenarios/luna_native_contract_v110s.json").read_text()), SPEC_V110S)
+        old = build_plan(CONFIG, {"cases": []}, SPEC_V19S)
+        plan = build_plan(CONFIG, old, SPEC_V110S)
+        self.assertEqual(len(plan["cells"]), 12)
+        for scenario in SPEC_V110S["source_scenarios"]:
+            far, near = sorted((c for c in plan["cases"] if c["scenario"] == scenario), key=lambda c: c["id"])
+            self.assertEqual(far["truth"], near["truth"])
+            facts = {r["kind"]: r for r in far["records"] if r["id"] in far["truth"]["support"]}
+            true_team, true_line = facts["assignment"]["team"], facts["team-line"]["line"]
+            links, ends = {}, {}
+            for a, b in zip(far["records"], near["records"], strict=True):
+                if a["id"] in far["truth"]["support"] or a["kind"] == "assignment":
+                    self.assertEqual(a, b)
+                    if a["kind"] == "assignment" and a["target"] != far["target"]:
+                        for val, target in ((a["team"], true_team), (a["target"], far["target"])):
+                            self.assertEqual(sum(x != y for x, y in zip(val, target, strict=True)), 5)
+                    continue
+                fa, ne = a["line"], b["line"]
+                self.assertEqual(sum(x != y for x, y in zip(fa, true_line, strict=True)), 5)
+                self.assertEqual(ne[:-1], true_line[:-1])
+                self.assertNotEqual(ne[-1], true_line[-1])
+                self.assertIn(fa, a["text"])
+                self.assertEqual(b, {**a, "line": ne, "text": a["text"].replace(fa, ne)})
+                (links if a["kind"] == "team-line" else ends)[fa] = ne
+            self.assertEqual(links, ends)
+            self.assertEqual(len(links), 6)
+            self.assertEqual(len(set(links.values())), 6)
+        for a, b in zip(plan["cells"][::2], plan["cells"][1::2], strict=True):
+            self.assertEqual(a["prompt"], b["prompt"])
+            partner = next(c for c in plan["cells"] if c["case_id"] != a["case_id"]
+                           and (c["scenario"], c["arm"], c["condition"].split("-")[1]) ==
+                           (a["scenario"], a["arm"], a["condition"].split("-")[1]))
+            for field in ("system", "request_params", "expected", "visible_ids"):
+                self.assertEqual(a[field], partner[field])
+            self.assertEqual(a["task"]["question"], partner["task"]["question"])
+
+    def test_join_contrasts_exercise_both_adapters_without_provider_spend(self):
+        for spec in (SPEC_V19S, SPEC_V110S):
+            with self.subTest(spec=spec["schema"]), tempfile.TemporaryDirectory() as tmp:
+                plan, digest, result, calls = self.execute(Path(tmp), spec=spec)
+                self.assertEqual(calls, 12)
+                self.assertEqual(audit(plan, digest, Path(tmp)), result)
+                report = summarize(plan, result)
+                self.assertTrue(all(a["all_6_passed"] for a in report["arms"]))
+                self.assertTrue(report["scope"].startswith("6 dependent views of 2"))
 
     def test_all_task_kinds_have_empty_controls_and_partial_views_keep_uncertainty_evidence(self):
         empty = [c for c in self.plan["cells"] if c["condition"] == "empty"]

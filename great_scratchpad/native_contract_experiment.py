@@ -60,8 +60,10 @@ SPEC_V19S = {**SPEC_V15S, "schema": "luna-native-contract-v19s", "fresh_seed": 2
              "source_scenarios": ["complete-join", "pending-join"], "partial_scenarios": ["complete-join"],
              "empty_scenarios": [], "decoy_chains": 6, "id_distances": ["far", "near"], "max_calls": 12,
              "future_gate": "all 6 views pass both caller and semantic contracts; no retrieval pilot authorized"}
+SPEC_V110S = {**SPEC_V19S, "schema": "luna-native-contract-v110s", "fresh_seed": 26110323,
+              "line_only_contrast": True}
 SUPPORTED_SPECS = (SPEC, SPEC_V11, SPEC_V12, SPEC_V13, SPEC_V13S, SPEC_V14S, SPEC_V15S,
-                   SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S, SPEC_V19S)
+                   SPEC_V12S, SPEC_V16S, SPEC_V17S, SPEC_V18S, SPEC_V19S, SPEC_V110S)
 FLAG_LEXICON = ("\nFlag lexicon: 有効 = enabled; 無効 = disabled; 未確認 = unknown; "
                 "a flag not stated in the supplied request = unobserved.")
 FLAG_SCOPE = "\nFor non-routing task families, use flags: {}."
@@ -152,7 +154,7 @@ def public_task(case: dict, records: list[dict], json_label: bool = False,
 
 
 def campaign_views(spec: dict):
-    if spec == SPEC_V19S:
+    if spec in (SPEC_V19S, SPEC_V110S):
         yield from join_contrast_cases(spec)
         return
     for scenario in CALIBRATION_CASES:
@@ -232,7 +234,8 @@ def source_revision() -> str:
               "scenarios/luna_native_contract_v16s.json", "docs/luna-native-contract-v16s-protocol.md",
               "scenarios/luna_native_contract_v17s.json", "docs/luna-native-contract-v17s-protocol.md",
               "scenarios/luna_native_contract_v18s.json", "docs/luna-native-contract-v18s-protocol.md",
-              "scenarios/luna_native_contract_v19s.json", "docs/luna-native-contract-v19s-protocol.md"]
+              "scenarios/luna_native_contract_v19s.json", "docs/luna-native-contract-v19s-protocol.md",
+              "scenarios/luna_native_contract_v110s.json", "docs/luna-native-contract-v110s-protocol.md"]
     subprocess.run(["git", "ls-files", "--error-unmatch", *paths], cwd=REPO, capture_output=True, check=True)
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *paths], cwd=REPO, check=True)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,

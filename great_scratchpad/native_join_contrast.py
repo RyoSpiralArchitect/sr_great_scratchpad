@@ -20,12 +20,14 @@ def join_contrast_cases(spec: dict):
         original = make_state_case(spec["fresh_seed"], scenario, "native-fresh", 0)
         assignment, link, endpoint = original["records"]
         for distance in spec["id_distances"][::1 if index % 2 == 0 else -1]:
+            upstream_distance = "far" if spec.get("line_only_contrast") else distance
             records = [dict(r) for r in original["records"]]
             target_endpoint = records[-1]
             pools = {endpoint.get("pool")}
             for i in range(1, spec["decoy_chains"] + 1):
-                ticket, team, line = (_other_id(v, i, distance) for v in
-                                      (original["target"], assignment["team"], link["line"]))
+                ticket = _other_id(original["target"], i, upstream_distance)
+                team = _other_id(assignment["team"], i, upstream_distance)
+                line = _other_id(link["line"], i, distance)
                 pool = "P" + sha256(f"{original['seed']}:{i}".encode()).hexdigest()[:5]
                 if pool in pools:
                     raise ValueError("Decoy pool collision in frozen join contrast.")
