@@ -778,6 +778,10 @@ explicitly pending endpoints by the evidence they cited for an unknown value.
 The [V1.10s run](docs/luna-native-contract-v110s-results.md) isolated similarity
 to the line ID alone. Both formats passed all six fresh views, including when
 only other lines had confirmed pool records.
+In the [V1.11s missing-middle run](docs/luna-native-contract-v111s-results.md),
+all four responses withheld the visible pool when the team-to-line link was
+removed. One native response in the separate missing-endpoint control returned
+prose instead of bare citation IDs; strict scores were native 5/6, JSON mode 6/6.
 
 Run the included smoke test:
 
