@@ -782,6 +782,10 @@ In the [V1.11s missing-middle run](docs/luna-native-contract-v111s-results.md),
 all four responses withheld the visible pool when the team-to-line link was
 removed. One native response in the separate missing-endpoint control returned
 prose instead of bare citation IDs; strict scores were native 5/6, JSON mode 6/6.
+In a [native-only citation enum comparison](docs/luna-native-contract-v112s-results.md)
+on a new target, both arms preserved all four abstentions and their evidence.
+The unconstrained arm added prose to IDs in one complete-chain answer; the
+enum arm returned the three exact IDs. Strict scores were 5/6 and 6/6.
 
 Run the included smoke test:
 
