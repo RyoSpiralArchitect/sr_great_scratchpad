@@ -786,6 +786,10 @@ In a [native-only citation enum comparison](docs/luna-native-contract-v112s-resu
 on a new target, both arms preserved all four abstentions and their evidence.
 The unconstrained arm added prose to IDs in one complete-chain answer; the
 enum arm returned the three exact IDs. Strict scores were 5/6 and 6/6.
+In the [two-register handoff challenge](docs/luna-native-contract-v113s-results.md),
+all 12 responses used bare supplied IDs. One no-enum answer nevertheless joined
+an offer to a receipt with a different code and reported an unlicensed pool;
+the enum arm abstained on that pair. Both arms handled both double agreements.
 
 Run the included smoke test:
 
