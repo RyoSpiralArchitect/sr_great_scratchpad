@@ -772,6 +772,9 @@ In the later [V1.8s standalone comparison](docs/luna-native-contract-v18s-result
 both formats passed 25/25 views, including sources mixed with 54 distractors.
 The [V1.9s protocol](docs/luna-native-contract-v19s-protocol.md) tests a different
 failure: citing a complete chain belonging to a request with a nearly identical ID.
+In the [12-call V1.9s run](docs/luna-native-contract-v19s-results.md), neither
+format borrowed a decoy endpoint or citation. Both distinguished missing and
+explicitly pending endpoints by the evidence they cited for an unknown value.
 
 Run the included smoke test:
 
